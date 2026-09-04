@@ -81,9 +81,9 @@ enum AudioMode {
 type PlaybackFuture = LocalBoxFuture<'static, (Nyaa, Result<(), NyaaError>)>;
 
 struct App {
-    nyaa: Option<Nyaa>,
-    playing: bool,
+    nyaa: Nyaa,
     duration: Duration,
+    playback_position: Duration,
     audio_mode: AudioMode,
     audio_asset: AudioAsset,
     pending_playback: Option<PlaybackFuture>,
@@ -101,9 +101,9 @@ impl App {
         };
 
         Self {
-            nyaa: None,
-            playing: false,
+            nyaa: Nyaa::new(),
             duration,
+            playback_position: Duration::ZERO,
             audio_mode: AudioMode::StaticBytes,
             audio_asset: AudioAsset::new(MY_AUDIO_NATIVE_PATH, MY_AUDIO_WASM_URL),
             pending_playback: None,
@@ -115,18 +115,10 @@ impl App {
             return;
         }
 
-        let mut nyaa = match self.nyaa.take() {
-            Some(nyaa) => nyaa,
-            None => match Nyaa::new() {
-                Ok(nyaa) => nyaa,
-                Err(error) => {
-                    log::error!("could not initialize audio: {error}");
-                    return;
-                }
-            },
-        };
+        let mut nyaa = Nyaa::new();
         let audio_mode = self.audio_mode;
         let audio_asset = self.audio_asset.clone();
+        let playback_position = self.playback_position;
 
         self.pending_playback = Some(
             async move {
@@ -134,6 +126,12 @@ impl App {
                     AudioMode::StaticBytes => nyaa.play_static_bytes(MY_AUDIO_BYTES),
                     AudioMode::File => nyaa.play_asset(&audio_asset).await,
                 };
+
+                if result.is_ok() {
+                    if let Err(error) = nyaa.try_seek(playback_position) {
+                        log::error!("{error}");
+                    }
+                }
 
                 (nyaa, result)
             }
@@ -151,11 +149,10 @@ impl App {
             .poll(&mut Context::from_waker(noop_waker_ref()))
         {
             Poll::Ready((nyaa, result)) => {
-                self.nyaa = Some(nyaa);
+                self.nyaa = nyaa;
 
-                match result {
-                    Ok(()) => self.playing = true,
-                    Err(error) => log::error!("could not play audio: {error}"),
+                if let Err(error) = result {
+                    log::error!("could not play audio: {error}");
                 }
             }
             Poll::Pending => self.pending_playback = Some(pending_playback),
@@ -163,10 +160,8 @@ impl App {
     }
 
     fn stop(&mut self) {
-        if let Some(nyaa) = self.nyaa.as_mut() {
-            nyaa.stop();
-        }
-        self.playing = false;
+        self.playback_position = self.nyaa.position();
+        self.nyaa.stop();
     }
 }
 
@@ -191,12 +186,9 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
 
-        if self.playing {
-            if self.nyaa.as_ref().is_some_and(Nyaa::is_empty) {
-                self.playing = false;
-            } else {
-                ui.ctx().request_repaint_after(Duration::from_millis(100));
-            }
+        if self.nyaa.is_playing() {
+            self.playback_position = self.nyaa.position();
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -224,7 +216,7 @@ impl eframe::App for App {
                     !is_loading,
                     egui::Button::new(if is_loading {
                         "Loading..."
-                    } else if self.playing {
+                    } else if self.nyaa.is_playing() {
                         "Stop"
                     } else {
                         "Play"
@@ -232,7 +224,7 @@ impl eframe::App for App {
                 );
 
                 if button.clicked() {
-                    if self.playing {
+                    if self.nyaa.is_playing() {
                         self.stop();
                     } else {
                         self.play();
@@ -242,44 +234,27 @@ impl eframe::App for App {
                 let duration_secs = self.duration.as_secs_f32();
                 let slider_max = duration_secs.max(1.0);
                 let slider_width = ui.available_width().min(360.0);
-                let mut position_secs = if self.playing {
-                    self.nyaa
-                        .as_ref()
-                        .map(Nyaa::position)
-                        .unwrap_or_default()
-                        .as_secs_f32()
-                } else {
-                    0.0
-                }
-                .min(duration_secs);
-                let response = ui
-                    .add_enabled_ui(self.playing, |ui| {
-                        ui.add_sized(
-                            [slider_width, 20.0],
-                            egui::Slider::new(&mut position_secs, 0.0..=slider_max)
-                                .show_value(false),
-                        )
-                    })
-                    .inner;
+                let mut position_secs = self.playback_position.as_secs_f32().min(duration_secs);
+
+                let response = ui.add_sized(
+                    [slider_width, 20.0],
+                    egui::Slider::new(&mut position_secs, 0.0..=slider_max).show_value(false),
+                );
 
                 if response.drag_started() {
-                    if let Some(nyaa) = self.nyaa.as_ref() {
-                        nyaa.pause();
-                    }
+                    self.nyaa.pause();
                 }
 
                 if response.changed() {
-                    if let Some(nyaa) = self.nyaa.as_mut() {
-                        if let Err(error) = nyaa.try_seek(Duration::from_secs_f32(position_secs)) {
-                            log::error!("could not seek audio: {error}");
-                        }
+                    self.playback_position = Duration::from_secs_f32(position_secs);
+
+                    if let Err(error) = self.nyaa.try_seek(Duration::from_secs_f32(position_secs)) {
+                        log::error!("could not seek audio: {error}");
                     }
                 }
 
                 if response.drag_stopped() {
-                    if let Some(nyaa) = self.nyaa.as_mut() {
-                        nyaa.resume();
-                    }
+                    self.nyaa.resume();
                 }
 
                 ui.horizontal(|ui| {
@@ -369,7 +344,7 @@ mod tests {
     #[test]
     fn reports_memory_for_idle_playing_and_stopped_audio() {
         let idle = memory_snapshot();
-        let mut nyaa = Nyaa::new().expect("audio output device is unavailable");
+        let mut nyaa = Nyaa::new();
 
         nyaa.play_static_bytes(MY_AUDIO_BYTES)
             .expect("embedded audio should be playable");
@@ -483,7 +458,7 @@ mod wasm_tests {
         let asset = asset_url
             .as_deref()
             .map(|url| AudioAsset::new("missing/native/audio.wav", url));
-        let mut nyaa = Nyaa::new().expect("audio output device is unavailable");
+        let mut nyaa = Nyaa::new();
         let idle = memory_snapshot();
 
         if let Some(asset) = asset.as_ref() {
