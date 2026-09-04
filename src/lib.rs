@@ -1,3 +1,6 @@
+pub use rodio;
+pub use rodio::cpal;
+
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

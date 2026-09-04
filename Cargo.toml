@@ -10,7 +10,6 @@ name = "rodisnyaa"
 path = "src/lib.rs"
 
 [dependencies]
-cpal = { version = "0.17", features = ["wasm-bindgen"] }
 dasp_sample = "0.11"
 rodio = { version = "0.22", features = [
     "mp3",
@@ -30,6 +29,7 @@ default = ["nightly"]
 nightly = ["cpal/audioworklet", "parking_lot_core/nightly"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+cpal = { version = "0.17", features = ["wasm-bindgen"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
