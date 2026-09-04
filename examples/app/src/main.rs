@@ -1,7 +1,7 @@
 use web_time::Duration;
 
 use eframe::egui;
-use futures::{future::LocalBoxFuture, task::noop_waker_ref, FutureExt};
+use futures::{FutureExt, future::LocalBoxFuture, task::noop_waker_ref};
 use rodisnyaa::{AudioAsset, Nyaa, NyaaError};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -374,7 +374,7 @@ mod tests {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
     use super::*;
-    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+    use wasm_bindgen::{JsCast, JsValue, closure::Closure};
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 

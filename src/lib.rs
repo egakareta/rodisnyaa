@@ -131,6 +131,12 @@ pub struct Nyaa {
     position_offset: Duration,
 }
 
+impl Default for Nyaa {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Nyaa {
     pub fn new() -> Self {
         let (mixer_device_sink, player) = match DeviceSinkBuilder::open_default_sink() {
@@ -473,14 +479,14 @@ impl Nyaa {
 
     /// Gets if a sink is playing
     ///
-    /// Equivalent to the inverse of [`Nyaa::is_paused()`].
+    /// Equivalent to `!is_paused() && !is_empty()`.
     ///
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
     /// sink is playing.
     pub fn is_playing(&self) -> bool {
         self.player
             .as_ref()
-            .is_some_and(|player| !player.is_paused())
+            .is_some_and(|player| !player.is_paused() && !player.empty())
     }
 
     /// Gets if a sink is paused
@@ -493,7 +499,7 @@ impl Nyaa {
 
     /// Returns true if this sink has no more sounds to play.
     pub fn is_empty(&self) -> bool {
-        self.player.as_ref().map_or(true, Player::empty)
+        self.player.as_ref().is_none_or(Player::empty)
     }
 
     /// Sleeps the current thread until the sound ends.
