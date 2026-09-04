@@ -80,7 +80,6 @@ enum AudioMode {
 
 struct WaveformWindow {
     visible_secs: f64,
-    follow_playhead: bool,
     view_start_secs: f64,
     resume_after_scrub: bool,
 }
@@ -89,7 +88,6 @@ impl Default for WaveformWindow {
     fn default() -> Self {
         Self {
             visible_secs: 20.0,
-            follow_playhead: true,
             view_start_secs: 0.0,
             resume_after_scrub: false,
         }
@@ -107,11 +105,7 @@ impl WaveformWindow {
         let visible_secs = self.visible_secs;
         let max_start = (duration_secs - visible_secs).max(0.0);
 
-        if self.follow_playhead {
-            self.view_start_secs = (playhead_secs - visible_secs * 0.5).clamp(0.0, max_start);
-        } else {
-            self.view_start_secs = self.view_start_secs.clamp(0.0, max_start);
-        }
+        self.view_start_secs = (playhead_secs - visible_secs * 0.5).clamp(0.0, max_start);
 
         self.view_start_secs..self.view_start_secs + visible_secs
     }
@@ -172,7 +166,13 @@ impl App {
             .as_secs_f64();
         let minimum_visible_secs = duration_secs.min(0.25);
 
+        let playhead_secs = self.nyaa.position().as_secs_f64();
+        let desired_size = egui::vec2(ui.available_width().min(760.0), 156.0);
+
         ui.horizontal(|ui| {
+            let offset = ((ui.available_width() - desired_size.x) / 2.0).max(0.0);
+            ui.add_space(offset);
+
             if ui.button("-").on_hover_text("Zoom out").clicked() {
                 self.waveform_window.visible_secs *= 2.0;
             }
@@ -182,7 +182,6 @@ impl App {
                     &mut self.waveform_window.visible_secs,
                     minimum_visible_secs..=duration_secs,
                 )
-                .text("Window")
                 .suffix("s")
                 .logarithmic(true),
             );
@@ -190,12 +189,8 @@ impl App {
             if ui.button("+").on_hover_text("Zoom in").clicked() {
                 self.waveform_window.visible_secs /= 2.0;
             }
-
-            ui.checkbox(&mut self.waveform_window.follow_playhead, "Follow");
         });
 
-        let playhead_secs = self.nyaa.position().as_secs_f64();
-        let desired_size = egui::vec2(ui.available_width().min(760.0), 156.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
         if response.hovered() {
