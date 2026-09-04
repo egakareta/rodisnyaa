@@ -1,7 +1,7 @@
 use web_time::Duration;
 
 use eframe::egui;
-use rodisnyaa::{AudioAsset, Nyaa};
+use rodisnyaa::{format_timestamp_secs, parse_timestamp, AudioAsset, Nyaa};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicUsize, Ordering},
@@ -201,7 +201,7 @@ impl eframe::App for App {
 
                         ui.spacing_mut().slider_width = control_width;
 
-                        let mut position_secs: f32 = self.nyaa.clamped_position().as_secs_f32();
+                        let mut position_secs: f64 = self.nyaa.clamped_position().as_secs_f64();
                         let response = ui.add(
                             egui::Slider::new(&mut position_secs, self.nyaa.seek_range())
                                 .show_value(false),
@@ -225,7 +225,22 @@ impl eframe::App for App {
                             egui::vec2(control_width, 20.0),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
-                                ui.label(self.nyaa.position_formatted());
+                                let response = ui.add(
+                                    egui::DragValue::new(&mut position_secs)
+                                        .range(self.nyaa.seek_range())
+                                        .custom_formatter(|position, _| {
+                                            format_timestamp_secs(position)
+                                        })
+                                        .custom_parser(|input| {
+                                            parse_timestamp(input).map(f64::from)
+                                        }),
+                                );
+
+                                if response.changed() {
+                                    if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
+                                        log::error!("could not seek audio: {error}");
+                                    }
+                                }
 
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),

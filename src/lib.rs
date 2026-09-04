@@ -524,8 +524,8 @@ impl Nyaa {
     }
 
     /// Convenience version of [`Nyaa::try_seek()`] that accepts the position in seconds.
-    pub fn try_seek_secs(&mut self, position_secs: f32) -> Result<(), NyaaError> {
-        self.try_seek(Duration::from_secs_f32(position_secs))
+    pub fn try_seek_secs(&mut self, position_secs: f64) -> Result<(), NyaaError> {
+        self.try_seek(Duration::from_secs_f64(position_secs))
     }
 
     /// Functionally equivalent to `try_seek`, but avoids the deadlock that occurs when calling
@@ -733,8 +733,8 @@ impl Nyaa {
     /// Attempts to produce a valid range for a seek slider, even if the duration is unknown.
     ///
     /// Will return `0.0..=1.0` if the duration is unknown, otherwise returns `0.0..=duration`.
-    pub fn seek_range(&self) -> std::ops::RangeInclusive<f32> {
-        0.0..=self.duration().unwrap_or_default().as_secs_f32().max(1.0)
+    pub fn seek_range(&self) -> std::ops::RangeInclusive<f64> {
+        0.0..=self.duration().unwrap_or_default().as_secs_f64().max(1.0)
     }
 
     /// Pauses playback of this player.
@@ -857,6 +857,41 @@ pub fn format_timestamp(duration: Duration) -> String {
         format!("{hours}:{minutes:02}:{seconds:02}")
     } else {
         format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// Formats f64 seconds as a string in the format `H:MM:SS` or `M:SS`.
+pub fn format_timestamp_secs(seconds: f64) -> String {
+    format_timestamp(Duration::from_secs_f64(seconds))
+}
+
+/// Parses a timestamp string in the format `H:MM:SS`, `M:SS`, or `SS` into a number of seconds.
+pub fn parse_timestamp(input: &str) -> Option<f64> {
+    let components = input.trim().split(':').collect::<Vec<_>>();
+    let parse_seconds = |value: &str| {
+        value
+            .parse::<f64>()
+            .ok()
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+    };
+
+    match components.as_slice() {
+        [seconds] => parse_seconds(seconds),
+        [minutes, seconds] => {
+            let minutes = minutes.parse::<u64>().ok()?;
+            let seconds = parse_seconds(seconds)?;
+
+            (seconds < 60.0).then_some(minutes as f64 * 60.0 + seconds)
+        }
+        [hours, minutes, seconds] => {
+            let hours = hours.parse::<u64>().ok()?;
+            let minutes = minutes.parse::<u64>().ok()?;
+            let seconds = parse_seconds(seconds)?;
+
+            (minutes < 60 && seconds < 60.0)
+                .then_some(hours as f64 * 3600.0 + minutes as f64 * 60.0 + seconds)
+        }
+        _ => None,
     }
 }
 
