@@ -189,9 +189,11 @@ impl AudioOutput {
     }
 }
 
-/// rodisnyaa
+/// rodisnyaa: Painless audio playback for native and web platforms.
 ///
-/// Painless audio playback for native and web platforms.
+/// If you are only playing one audio track at a time, you can use [`Nyaa`] directly.
+/// If you want to play multiple tracks simultaneously, create an [`AudioOutput`] and
+/// pass clones to [`Nyaa::new_with_output`].
 pub struct Nyaa {
     /// The audio output shared by this player.
     audio_output: AudioOutput,
