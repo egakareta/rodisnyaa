@@ -83,7 +83,6 @@ type PlaybackFuture = LocalBoxFuture<'static, (Nyaa, Result<(), NyaaError>)>;
 struct App {
     nyaa: Nyaa,
     duration: Duration,
-    playback_position: Duration,
     audio_mode: AudioMode,
     audio_asset: AudioAsset,
     pending_playback: Option<PlaybackFuture>,
@@ -103,7 +102,6 @@ impl App {
         Self {
             nyaa: Nyaa::new(),
             duration,
-            playback_position: Duration::ZERO,
             audio_mode: AudioMode::StaticBytes,
             audio_asset: AudioAsset::new(MY_AUDIO_NATIVE_PATH, MY_AUDIO_WASM_URL),
             pending_playback: None,
@@ -118,7 +116,6 @@ impl App {
         let mut nyaa = Nyaa::new();
         let audio_mode = self.audio_mode;
         let audio_asset = self.audio_asset.clone();
-        let playback_position = self.playback_position;
 
         self.pending_playback = Some(
             async move {
@@ -126,13 +123,6 @@ impl App {
                     AudioMode::StaticBytes => nyaa.play_static_bytes(MY_AUDIO_BYTES),
                     AudioMode::File => nyaa.play_asset(&audio_asset).await,
                 };
-
-                if result.is_ok() {
-                    if let Err(error) = nyaa.try_seek(playback_position) {
-                        log::error!("{error}");
-                    }
-                }
-
                 (nyaa, result)
             }
             .boxed_local(),
@@ -160,7 +150,6 @@ impl App {
     }
 
     fn stop(&mut self) {
-        self.playback_position = self.nyaa.position();
         self.nyaa.stop();
     }
 }
@@ -187,7 +176,6 @@ impl eframe::App for App {
         }
 
         if self.nyaa.is_playing() {
-            self.playback_position = self.nyaa.position();
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
 
@@ -234,7 +222,7 @@ impl eframe::App for App {
                 let duration_secs = self.duration.as_secs_f32();
                 let slider_max = duration_secs.max(1.0);
                 let slider_width = ui.available_width().min(360.0);
-                let mut position_secs = self.playback_position.as_secs_f32().min(duration_secs);
+                let mut position_secs = self.nyaa.position().as_secs_f32().min(duration_secs);
 
                 let response = ui.add_sized(
                     [slider_width, 20.0],
@@ -246,8 +234,6 @@ impl eframe::App for App {
                 }
 
                 if response.changed() {
-                    self.playback_position = Duration::from_secs_f32(position_secs);
-
                     if let Err(error) = self.nyaa.try_seek(Duration::from_secs_f32(position_secs)) {
                         log::error!("could not seek audio: {error}");
                     }
