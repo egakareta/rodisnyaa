@@ -2,15 +2,24 @@ pub use rodio;
 pub use rodio::cpal;
 
 use dasp_sample::FromSample;
+#[cfg(target_arch = "wasm32")]
+use js_sys::Uint8Array;
 use rodio::decoder::DecoderError;
 use rodio::source::SeekError;
 use rodio::{Decoder, DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player, Source};
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::File;
 use std::io::{Cursor, Error};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::{fs::File, path::Path};
 use thiserror::Error;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use web_sys::Response;
 
 /// The error type for [`Nyaa`].
 #[derive(Debug, Error)]
@@ -30,6 +39,73 @@ pub enum NyaaError {
     /// Occurs when `try_seek` fails because the underlying decoder has an error or does not support seeking.
     #[error("failed to seek audio: {0}")]
     Seek(#[source] SeekError),
+
+    /// Errors that might occur when loading an audio asset in a browser.
+    #[cfg(target_arch = "wasm32")]
+    #[error("failed to load browser audio asset: {0}")]
+    BrowserAsset(String),
+}
+
+/// An audio file with locations for native and browser targets.
+///
+/// Native targets open [`native_path`](Self::native_path) as a file and stream it through the
+/// decoder. WASM targets fetch [`wasm_url`](Self::wasm_url) from the browser and decode the
+/// response in memory, because browser requests are not exposed as seekable Rust readers.
+#[derive(Clone, Debug)]
+pub struct AudioAsset {
+    native_path: PathBuf,
+    wasm_url: String,
+}
+
+impl AudioAsset {
+    /// Creates an asset using a native filesystem path and a browser URL.
+    pub fn new(native_path: impl Into<PathBuf>, wasm_url: impl Into<String>) -> Self {
+        Self {
+            native_path: native_path.into(),
+            wasm_url: wasm_url.into(),
+        }
+    }
+
+    /// Returns the native filesystem path.
+    pub fn native_path(&self) -> &Path {
+        &self.native_path
+    }
+
+    /// Returns the browser URL.
+    pub fn wasm_url(&self) -> &str {
+        &self.wasm_url
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_asset_error(error: impl std::fmt::Debug) -> NyaaError {
+    NyaaError::BrowserAsset(format!("{error:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
+    let window = web_sys::window()
+        .ok_or_else(|| NyaaError::BrowserAsset("browser window is unavailable".to_string()))?;
+    let response = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(browser_asset_error)?
+        .dyn_into::<Response>()
+        .map_err(browser_asset_error)?;
+
+    if !response.ok() {
+        return Err(NyaaError::BrowserAsset(format!(
+            "request returned HTTP status {} {}",
+            response.status(),
+            response.status_text()
+        )));
+    }
+
+    let buffer = JsFuture::from(response.array_buffer().map_err(browser_asset_error)?)
+        .await
+        .map_err(browser_asset_error)?;
+    let bytes = Uint8Array::new(&buffer).to_vec();
+
+    Ok(Arc::from(bytes))
 }
 
 /// rodisnyaa
@@ -161,6 +237,30 @@ impl Nyaa {
         Ok(())
     }
 
+    /// Plays an audio asset using its native path or browser URL.
+    pub async fn play_asset(&mut self, asset: &AudioAsset) -> Result<(), NyaaError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = File::open(asset.native_path()).map_err(NyaaError::File)?;
+            let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
+
+            self.play_source(source);
+
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = fetch_browser_asset(asset.wasm_url()).await?;
+            let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+
+            self.play_source(source);
+            self.current_shared_bytes = Some(bytes);
+
+            Ok(())
+        }
+    }
+
     /// Attempts to seek to a given position in the current source.
     ///
     /// This blocks between 0 and ~5 milliseconds.
@@ -253,6 +353,23 @@ impl Nyaa {
         self.position_offset = position;
 
         Ok(())
+    }
+
+    /// Returns the duration of an audio asset using its native path or browser URL.
+    pub async fn duration_from_asset(asset: &AudioAsset) -> Result<Option<Duration>, NyaaError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = File::open(asset.native_path()).map_err(NyaaError::File)?;
+            return Ok(Decoder::try_from(file)
+                .map_err(NyaaError::Decode)?
+                .total_duration());
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = fetch_browser_asset(asset.wasm_url()).await?;
+            Ok(Self::decoder_from_shared_bytes(bytes)?.total_duration())
+        }
     }
 
     pub fn duration_from_shared_bytes(

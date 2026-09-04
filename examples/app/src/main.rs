@@ -1,10 +1,12 @@
 use web_time::Duration;
 
 use eframe::egui;
-use rodisnyaa::Nyaa;
+use futures::{future::LocalBoxFuture, task::noop_waker_ref, FutureExt};
+use rodisnyaa::{AudioAsset, Nyaa, NyaaError};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicUsize, Ordering},
+    task::{Context, Poll},
 };
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -67,11 +69,24 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 const MY_AUDIO_BYTES: &[u8] = include_bytes!("../../THE UNFORGIVING.mp3");
+const MY_AUDIO_NATIVE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../THE UNFORGIVING.mp3");
+const MY_AUDIO_WASM_URL: &str = "THE UNFORGIVING.mp3";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AudioMode {
+    StaticBytes,
+    File,
+}
+
+type PlaybackFuture = LocalBoxFuture<'static, (Nyaa, Result<(), NyaaError>)>;
 
 struct App {
     nyaa: Option<Nyaa>,
     playing: bool,
     duration: Duration,
+    audio_mode: AudioMode,
+    audio_asset: AudioAsset,
+    pending_playback: Option<PlaybackFuture>,
 }
 
 impl App {
@@ -89,25 +104,61 @@ impl App {
             nyaa: None,
             playing: false,
             duration,
+            audio_mode: AudioMode::StaticBytes,
+            audio_asset: AudioAsset::new(MY_AUDIO_NATIVE_PATH, MY_AUDIO_WASM_URL),
+            pending_playback: None,
         }
     }
 
     fn play(&mut self) {
-        if self.nyaa.is_none() {
-            match Nyaa::new() {
-                Ok(nyaa) => self.nyaa = Some(nyaa),
+        if self.pending_playback.is_some() {
+            return;
+        }
+
+        let mut nyaa = match self.nyaa.take() {
+            Some(nyaa) => nyaa,
+            None => match Nyaa::new() {
+                Ok(nyaa) => nyaa,
                 Err(error) => {
                     log::error!("could not initialize audio: {error}");
                     return;
                 }
-            }
-        }
+            },
+        };
+        let audio_mode = self.audio_mode;
+        let audio_asset = self.audio_asset.clone();
 
-        if let Some(nyaa) = self.nyaa.as_mut() {
-            match nyaa.play_static_bytes(MY_AUDIO_BYTES) {
-                Ok(()) => self.playing = true,
-                Err(error) => log::error!("could not play audio: {error}"),
+        self.pending_playback = Some(
+            async move {
+                let result = match audio_mode {
+                    AudioMode::StaticBytes => nyaa.play_static_bytes(MY_AUDIO_BYTES),
+                    AudioMode::File => nyaa.play_asset(&audio_asset).await,
+                };
+
+                (nyaa, result)
             }
+            .boxed_local(),
+        );
+    }
+
+    fn poll_pending_playback(&mut self) {
+        let Some(mut pending_playback) = self.pending_playback.take() else {
+            return;
+        };
+
+        match pending_playback
+            .as_mut()
+            .poll(&mut Context::from_waker(noop_waker_ref()))
+        {
+            Poll::Ready((nyaa, result)) => {
+                self.nyaa = Some(nyaa);
+
+                match result {
+                    Ok(()) => self.playing = true,
+                    Err(error) => log::error!("could not play audio: {error}"),
+                }
+            }
+            Poll::Pending => self.pending_playback = Some(pending_playback),
         }
     }
 
@@ -134,6 +185,12 @@ fn format_timestamp(duration: Duration) -> String {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_pending_playback();
+
+        if self.pending_playback.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
+
         if self.playing {
             if self.nyaa.as_ref().is_some_and(Nyaa::is_empty) {
                 self.playing = false;
@@ -153,10 +210,28 @@ impl eframe::App for App {
 
                 ui.label(format!("Peak: {:.2} MiB", peak as f64 / 1024.0 / 1024.0));
 
-                if ui
-                    .button(if self.playing { "Stop" } else { "Play" })
-                    .clicked()
-                {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.audio_mode,
+                        AudioMode::StaticBytes,
+                        "Static bytes",
+                    );
+                    ui.selectable_value(&mut self.audio_mode, AudioMode::File, "File");
+                });
+
+                let is_loading = self.pending_playback.is_some();
+                let button = ui.add_enabled(
+                    !is_loading,
+                    egui::Button::new(if is_loading {
+                        "Loading..."
+                    } else if self.playing {
+                        "Stop"
+                    } else {
+                        "Play"
+                    }),
+                );
+
+                if button.clicked() {
                     if self.playing {
                         self.stop();
                     } else {
