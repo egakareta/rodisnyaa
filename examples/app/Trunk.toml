@@ -1,0 +1,8 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve.headers]
+"cross-origin-embedder-policy" = "require-corp"
+"cross-origin-opener-policy" = "same-origin"
+"cross-origin-resource-policy" = "same-site"
