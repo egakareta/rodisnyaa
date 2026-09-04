@@ -258,3 +258,59 @@ fn main() {
             .expect("failed to start eframe");
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    #[derive(Clone, Copy)]
+    struct MemorySnapshot {
+        live_bytes: usize,
+        peak_bytes: usize,
+    }
+
+    fn memory_snapshot() -> MemorySnapshot {
+        MemorySnapshot {
+            live_bytes: LIVE_BYTES.load(Ordering::Relaxed),
+            peak_bytes: PEAK_BYTES.load(Ordering::Relaxed),
+        }
+    }
+
+    fn format_mib(bytes: usize) -> String {
+        format!("{:.2}", bytes as f64 / 1024.0 / 1024.0)
+    }
+
+    fn print_memory_snapshot(label: &str, snapshot: MemorySnapshot, idle: MemorySnapshot) {
+        let live_delta = snapshot.live_bytes as isize - idle.live_bytes as isize;
+        let peak_delta = snapshot.peak_bytes as isize - idle.peak_bytes as isize;
+
+        println!(
+            "{label:>8}: live={} MiB ({:+.2} MiB), peak={} MiB ({:+.2} MiB)",
+            format_mib(snapshot.live_bytes),
+            live_delta as f64 / 1024.0 / 1024.0,
+            format_mib(snapshot.peak_bytes),
+            peak_delta as f64 / 1024.0 / 1024.0,
+        );
+    }
+
+    #[test]
+    fn reports_memory_for_idle_playing_and_stopped_audio() {
+        let idle = memory_snapshot();
+        let mut nyaa = Nyaa::new().expect("audio output device is unavailable");
+
+        nyaa.play_bytes(MY_AUDIO_FILE)
+            .expect("embedded audio should be playable");
+        thread::sleep(StdDuration::from_millis(250));
+        let playing = memory_snapshot();
+
+        nyaa.stop();
+        thread::sleep(StdDuration::from_millis(250));
+        let stopped = memory_snapshot();
+
+        println!("audio memory report (process allocations):");
+        print_memory_snapshot("idle", idle, idle);
+        print_memory_snapshot("playing", playing, idle);
+        print_memory_snapshot("stopped", stopped, idle);
+    }
+}
