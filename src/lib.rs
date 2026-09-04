@@ -7,10 +7,14 @@ use js_sys::Uint8Array;
 use rodio::decoder::DecoderError;
 use rodio::source::SeekError;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 use std::io::{Cursor, Error};
 use std::path::{Path, PathBuf};
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
@@ -129,7 +133,17 @@ pub struct Nyaa {
     ///
     /// You should probably use [`Nyaa::position()`] instead.
     position_offset: Duration,
+
+    /// Whether the offset is the complete position while no source is actively playing.
+    position_is_held: bool,
+
+    /// The result of an audio asset being loaded in the browser.
+    #[cfg(target_arch = "wasm32")]
+    pending_playback: Option<PendingPlayback>,
 }
+
+#[cfg(target_arch = "wasm32")]
+type PendingPlayback = Rc<RefCell<Option<Result<Arc<[u8]>, NyaaError>>>>;
 
 impl Default for Nyaa {
     fn default() -> Self {
@@ -138,8 +152,8 @@ impl Default for Nyaa {
 }
 
 impl Nyaa {
-    pub fn new() -> Self {
-        let (mixer_device_sink, player) = match DeviceSinkBuilder::open_default_sink() {
+    fn open_default_output() -> (Option<MixerDeviceSink>, Option<Player>) {
+        match DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
                 let player = Player::connect_new(sink.mixer());
                 sink.log_on_drop(false);
@@ -148,7 +162,14 @@ impl Nyaa {
             }
 
             Err(_) => (None, None),
-        };
+        }
+    }
+
+    pub fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (mixer_device_sink, player) = Self::open_default_output();
+        #[cfg(target_arch = "wasm32")]
+        let (mixer_device_sink, player) = (None, None);
 
         Self {
             mixer_device_sink,
@@ -157,7 +178,19 @@ impl Nyaa {
             current_shared_bytes: None,
             current_static_bytes: None,
             position_offset: Duration::ZERO,
+            position_is_held: true,
+            #[cfg(target_arch = "wasm32")]
+            pending_playback: None,
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn ensure_audio_output(&mut self) {
+        if self.mixer_device_sink.is_some() {
+            return;
+        }
+
+        (self.mixer_device_sink, self.player) = Self::open_default_output();
     }
 
     /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
@@ -211,6 +244,13 @@ impl Nyaa {
         }
 
         let duration = source.total_duration();
+        self.position_offset = position;
+        self.position_is_held = true;
+        *self.duration.lock().unwrap() = duration;
+
+        #[cfg(target_arch = "wasm32")]
+        self.ensure_audio_output();
+
         let Some(mixer_device_sink) = self.mixer_device_sink.as_ref() else {
             return Ok(());
         };
@@ -225,7 +265,7 @@ impl Nyaa {
         self.current_shared_bytes = None;
         self.current_static_bytes = None;
         self.position_offset = position;
-        *self.duration.lock().unwrap() = duration;
+        self.position_is_held = false;
 
         Ok(())
     }
@@ -236,6 +276,23 @@ impl Nyaa {
         let source = Self::decoder_from_shared_bytes(bytes.clone())?;
         self.play_source(source)?;
         self.current_shared_bytes = Some(bytes);
+
+        Ok(())
+    }
+
+    /// Loads static bytes and their duration without starting playback.
+    pub fn load_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
+        let duration = Self::decoder_from_static_bytes(bytes)?.total_duration();
+
+        if let Some(player) = self.player.as_ref() {
+            player.stop();
+        }
+
+        self.current_shared_bytes = None;
+        self.current_static_bytes = Some(bytes);
+        self.position_offset = Duration::ZERO;
+        self.position_is_held = true;
+        *self.duration.lock().unwrap() = duration;
 
         Ok(())
     }
@@ -280,6 +337,75 @@ impl Nyaa {
         }
     }
 
+    /// Starts playing an audio asset while keeping browser loading state in this instance.
+    ///
+    /// Native assets start synchronously. Browser assets are fetched in the background and
+    /// completed by calling [`Nyaa::poll_pending_playback`].
+    pub fn start_asset_playback(&mut self, asset: &AudioAsset) -> Result<(), NyaaError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.play_file(asset.native_path())
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            if self.pending_playback.is_some() {
+                return Ok(());
+            }
+
+            self.ensure_audio_output();
+
+            let pending_playback = PendingPlayback::default();
+            let pending_result = pending_playback.clone();
+            let url = asset.wasm_url().to_owned();
+
+            wasm_bindgen_futures::spawn_local(async move {
+                *pending_result.borrow_mut() = Some(fetch_browser_asset(&url).await);
+            });
+
+            self.pending_playback = Some(pending_playback);
+
+            Ok(())
+        }
+    }
+
+    /// Completes a browser asset playback once its fetch has finished.
+    ///
+    /// Returns `None` while no playback is pending or the current fetch is still in progress.
+    pub fn poll_pending_playback(&mut self) -> Option<Result<(), NyaaError>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            None
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let result = self.pending_playback.as_ref()?.borrow_mut().take()?;
+            self.pending_playback = None;
+
+            Some(result.and_then(|bytes| {
+                let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+                self.play_source(source)?;
+                self.current_shared_bytes = Some(bytes);
+
+                Ok(())
+            }))
+        }
+    }
+
+    /// Returns whether a browser audio asset is currently loading.
+    pub fn is_loading(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            false
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.pending_playback.is_some()
+        }
+    }
+
     /// Attempts to seek to a given position in the current source.
     ///
     /// This blocks between 0 and ~5 milliseconds.
@@ -309,7 +435,13 @@ impl Nyaa {
         #[cfg(not(target_arch = "wasm32"))]
         {
             match self.player.as_ref() {
-                Some(player) => player.try_seek(position).map_err(NyaaError::Seek),
+                Some(player) => {
+                    player.try_seek(position).map_err(NyaaError::Seek)?;
+                    self.position_offset = Duration::ZERO;
+                    self.position_is_held = false;
+
+                    Ok(())
+                }
                 None => Ok(()),
             }
         }
@@ -372,6 +504,7 @@ impl Nyaa {
         }
 
         self.position_offset = position;
+        self.position_is_held = true;
 
         true
     }
@@ -418,6 +551,7 @@ impl Nyaa {
         self.player = Some(new_player);
 
         self.position_offset = position;
+        self.position_is_held = false;
 
         Ok(())
     }
@@ -468,7 +602,11 @@ impl Nyaa {
     /// [`get_pos()`](Player::get_pos) returns *5s* then the position in the mp3
     /// recording is *10s* from its start.
     pub fn position(&self) -> Duration {
-        let player_position = self.player.as_ref().map_or(Duration::ZERO, Player::get_pos);
+        let player_position = if self.position_is_held {
+            Duration::ZERO
+        } else {
+            self.player.as_ref().map_or(Duration::ZERO, Player::get_pos)
+        };
         let position = self.position_offset.saturating_add(player_position);
 
         match self.duration() {
@@ -503,10 +641,15 @@ impl Nyaa {
     }
 
     /// Stops the sink by emptying the queue.
-    pub fn stop(&self) {
+    pub fn stop(&mut self) {
+        let position = self.position();
+
         if let Some(player) = self.player.as_ref() {
             player.stop();
         }
+
+        self.position_offset = position;
+        self.position_is_held = true;
     }
 
     /// Changes the volume of the sound.
@@ -534,9 +677,11 @@ impl Nyaa {
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
     /// sink is playing.
     pub fn is_playing(&self) -> bool {
-        self.player
-            .as_ref()
-            .is_some_and(|player| !player.is_paused() && !player.empty())
+        !self.position_is_held
+            && self
+                .player
+                .as_ref()
+                .is_some_and(|player| !player.is_paused() && !player.empty())
     }
 
     /// Gets if a sink is paused
@@ -549,7 +694,7 @@ impl Nyaa {
 
     /// Returns true if this sink has no more sounds to play.
     pub fn is_empty(&self) -> bool {
-        self.player.as_ref().is_none_or(Player::empty)
+        self.position_is_held || self.player.as_ref().is_none_or(Player::empty)
     }
 
     /// Sleeps the current thread until the sound ends.
@@ -563,6 +708,7 @@ impl Nyaa {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::thread;
 
     const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/THE UNFORGIVING.mp3");
 
@@ -597,5 +743,64 @@ mod tests {
             playback_position < requested_position + Duration::from_secs(1),
             "playback advanced unexpectedly far to {playback_position:?}"
         );
+    }
+
+    #[test]
+    fn seeking_playback_replaces_the_deferred_position() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.try_seek(Duration::from_secs(42))
+            .expect("seeking without a track should succeed");
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+        nyaa.try_seek(Duration::ZERO)
+            .expect("active playback should seek back to the start");
+
+        let playback_position = nyaa.position();
+
+        assert!(
+            playback_position < Duration::from_secs(1),
+            "playback reported the stale deferred position {playback_position:?} after seeking to the start"
+        );
+    }
+
+    #[test]
+    fn loading_static_bytes_exposes_duration_without_playing() {
+        let mut nyaa = Nyaa::new();
+        let expected_duration = Nyaa::duration_from_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio duration should be readable");
+
+        nyaa.load_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be loadable");
+
+        assert_eq!(nyaa.duration(), expected_duration);
+        assert!(!nyaa.is_playing());
+    }
+
+    #[test]
+    fn stopping_playback_holds_the_reported_position() {
+        let mut nyaa = Nyaa::new();
+        let start_position = Duration::from_secs(42);
+
+        nyaa.try_seek(start_position)
+            .expect("seeking without a track should succeed");
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+        thread::sleep(Duration::from_millis(25));
+        nyaa.stop();
+
+        let stopped_position = nyaa.position();
+
+        assert!(
+            stopped_position >= start_position,
+            "stopped playback moved backward to {stopped_position:?}"
+        );
+        assert!(
+            stopped_position < start_position + Duration::from_secs(1),
+            "stopped playback reported {stopped_position:?} instead of holding near {start_position:?}"
+        );
+
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(nyaa.position(), stopped_position);
     }
 }

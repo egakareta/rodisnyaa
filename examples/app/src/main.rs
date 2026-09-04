@@ -1,12 +1,10 @@
 use web_time::Duration;
 
 use eframe::egui;
-use futures::{future::LocalBoxFuture, task::noop_waker_ref, FutureExt};
-use rodisnyaa::{AudioAsset, Nyaa, NyaaError};
+use rodisnyaa::{AudioAsset, Nyaa};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicUsize, Ordering},
-    task::{Context, Poll},
 };
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -78,78 +76,35 @@ enum AudioMode {
     File,
 }
 
-type PlaybackFuture = LocalBoxFuture<'static, (Nyaa, Result<(), NyaaError>)>;
-
 struct App {
     nyaa: Nyaa,
-    duration: Duration,
     audio_mode: AudioMode,
     audio_asset: AudioAsset,
-    pending_playback: Option<PlaybackFuture>,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let duration = match Nyaa::duration_from_static_bytes(MY_AUDIO_BYTES) {
-            Ok(Some(duration)) => duration,
-            Ok(None) => Duration::ZERO,
-            Err(error) => {
-                log::error!("could not determine audio duration: {error}");
-                Duration::ZERO
-            }
-        };
+        let mut nyaa = Nyaa::new();
+
+        if let Err(error) = nyaa.load_static_bytes(MY_AUDIO_BYTES) {
+            log::error!("could not load audio duration: {error}");
+        }
 
         Self {
-            nyaa: Nyaa::new(),
-            duration,
+            nyaa,
             audio_mode: AudioMode::StaticBytes,
             audio_asset: AudioAsset::new(MY_AUDIO_NATIVE_PATH, MY_AUDIO_WASM_URL),
-            pending_playback: None,
         }
     }
 
     fn play(&mut self) {
-        if self.pending_playback.is_some() {
-            return;
-        }
-
-        let mut nyaa = Nyaa::new();
-        let audio_mode = self.audio_mode;
-        let audio_asset = self.audio_asset.clone();
-        let start_position = self.nyaa.position();
-
-        self.pending_playback = Some(
-            async move {
-                let result = match nyaa.try_seek(start_position) {
-                    Ok(()) => match audio_mode {
-                        AudioMode::StaticBytes => nyaa.play_static_bytes(MY_AUDIO_BYTES),
-                        AudioMode::File => nyaa.play_asset(&audio_asset).await,
-                    },
-                    Err(error) => Err(error),
-                };
-                (nyaa, result)
-            }
-            .boxed_local(),
-        );
-    }
-
-    fn poll_pending_playback(&mut self) {
-        let Some(mut pending_playback) = self.pending_playback.take() else {
-            return;
+        let result = match self.audio_mode {
+            AudioMode::StaticBytes => self.nyaa.play_static_bytes(MY_AUDIO_BYTES),
+            AudioMode::File => self.nyaa.start_asset_playback(&self.audio_asset),
         };
 
-        match pending_playback
-            .as_mut()
-            .poll(&mut Context::from_waker(noop_waker_ref()))
-        {
-            Poll::Ready((nyaa, result)) => {
-                self.nyaa = nyaa;
-
-                if let Err(error) = result {
-                    log::error!("could not play audio: {error}");
-                }
-            }
-            Poll::Pending => self.pending_playback = Some(pending_playback),
+        if let Err(error) = result {
+            log::error!("could not play audio: {error}");
         }
     }
 
@@ -173,9 +128,11 @@ fn format_timestamp(duration: Duration) -> String {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.poll_pending_playback();
+        if let Some(Err(error)) = self.nyaa.poll_pending_playback() {
+            log::error!("could not play audio: {error}");
+        }
 
-        if self.pending_playback.is_some() {
+        if self.nyaa.is_loading() {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
 
@@ -227,7 +184,7 @@ impl eframe::App for App {
                     }
                 });
 
-                let is_loading = self.pending_playback.is_some();
+                let is_loading = self.nyaa.is_loading();
                 let button = ui.add_enabled(
                     !is_loading,
                     egui::Button::new(if is_loading {
@@ -247,7 +204,8 @@ impl eframe::App for App {
                     }
                 }
 
-                let duration_secs = self.duration.as_secs_f32();
+                let duration = self.nyaa.duration().unwrap_or_default();
+                let duration_secs = duration.as_secs_f32();
                 let slider_max = duration_secs.max(1.0);
                 let control_width = ui.available_width().min(360.0);
                 let mut position_secs = self.nyaa.position().as_secs_f32().min(duration_secs);
@@ -290,7 +248,7 @@ impl eframe::App for App {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        ui.label(format_timestamp(self.duration));
+                                        ui.label(format_timestamp(duration));
                                     },
                                 );
                             },
