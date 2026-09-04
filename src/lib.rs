@@ -2,36 +2,60 @@ pub use rodio;
 pub use rodio::cpal;
 
 use dasp_sample::FromSample;
-#[cfg(target_arch = "wasm32")]
-use std::io::Cursor;
+use rodio::decoder::DecoderError;
+use rodio::source::SeekError;
+use rodio::{Decoder, DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player, Source};
+use std::io::{Cursor, Error};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
-use std::{fs::File, io::Cursor, path::Path};
-
-use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+use std::{fs::File, path::Path};
 use thiserror::Error;
 
+/// The error type for [`Nyaa`].
 #[derive(Debug, Error)]
 pub enum NyaaError {
+    /// Errors that might occur when interfacing with audio output.
     #[error("failed to open audio output: {0}")]
-    Output(#[source] rodio::DeviceSinkError),
+    Output(#[source] DeviceSinkError),
 
+    /// The error type for I/O operations of the Read, Write, Seek, and associated traits.
     #[error("failed to open audio file: {0}")]
-    File(#[source] std::io::Error),
+    File(#[source] Error),
 
+    /// Errors that can occur when creating a decoder.
     #[error("failed to decode audio file: {0}")]
-    Decode(#[source] rodio::decoder::DecoderError),
+    Decode(#[source] DecoderError),
 
+    /// Occurs when `try_seek` fails because the underlying decoder has an error or does not support seeking.
     #[error("failed to seek audio: {0}")]
-    Seek(#[source] rodio::source::SeekError),
+    Seek(#[source] SeekError),
 }
 
+/// rodisnyaa
+///
+/// Painless audio playback for native and web platforms.
 pub struct Nyaa {
-    mixer_device_sink: rodio::MixerDeviceSink,
+    /// rodio [`MixerDeviceSink`]
+    mixer_device_sink: MixerDeviceSink,
+
+    /// rodio [`Player`]
     player: Player,
+
+    /// The total duration of the current source, if known.
+    ///
+    /// You should probably use [`Nyaa::duration()`] instead.
     duration: Mutex<Option<Duration>>,
-    current_bytes: Option<Arc<[u8]>>,
+
+    /// The bytes of the current source, if it was played from a heap allocation.
+    current_shared_bytes: Option<Arc<[u8]>>,
+
+    /// The bytes of the current source, if it was played from a `'static` lifetime.
+    current_static_bytes: Option<&'static [u8]>,
+
+    /// The offset of the current position in the source.
+    ///
+    /// You should probably use [`Nyaa::position()`] instead.
     position_offset: Duration,
 }
 
@@ -48,11 +72,13 @@ impl Nyaa {
             mixer_device_sink,
             player,
             duration: Mutex::new(None),
-            current_bytes: None,
+            current_shared_bytes: None,
+            current_static_bytes: None,
             position_offset: Duration::ZERO,
         })
     }
 
+    /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
     pub fn log_on_drop(&mut self, log: bool) {
         self.mixer_device_sink.log_on_drop(log);
     }
@@ -69,10 +95,23 @@ impl Nyaa {
             .map_err(NyaaError::Decode)
     }
 
+    fn decoder_from_static_bytes(
+        bytes: &'static [u8],
+    ) -> Result<Decoder<Cursor<&'static [u8]>>, NyaaError> {
+        Decoder::builder()
+            .with_data(Cursor::new(bytes))
+            .with_byte_len(bytes.len() as u64)
+            .build()
+            .map_err(NyaaError::Decode)
+    }
+
     fn fresh_player(&self) -> Player {
         Player::connect_new(self.mixer_device_sink.mixer())
     }
 
+    /// Resumes playback of a paused player.
+    ///
+    /// No effect if not paused.
     fn play_source<S>(&mut self, source: S)
     where
         S: Source + Send + 'static,
@@ -86,17 +125,28 @@ impl Nyaa {
         new_player.play();
 
         self.player = new_player;
-        self.current_bytes = None;
+        self.current_shared_bytes = None;
+        self.current_static_bytes = None;
         self.position_offset = Duration::ZERO;
         *self.duration.lock().unwrap() = duration;
     }
 
-    pub fn play_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
+    pub fn play_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
 
         let source = Self::decoder_from_shared_bytes(bytes.clone())?;
         self.play_source(source);
-        self.current_bytes = Some(bytes);
+        self.current_shared_bytes = Some(bytes);
+
+        Ok(())
+    }
+
+    /// Plays bytes with a `'static` lifetime, such as data from `include_bytes!`, without
+    /// copying the encoded audio onto the heap.
+    pub fn play_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
+        let source = Self::decoder_from_static_bytes(bytes)?;
+        self.play_source(source);
+        self.current_static_bytes = Some(bytes);
 
         Ok(())
     }
@@ -111,6 +161,24 @@ impl Nyaa {
         Ok(())
     }
 
+    /// Attempts to seek to a given position in the current source.
+    ///
+    /// This blocks between 0 and ~5 milliseconds.
+    ///
+    /// As long as the duration of the source is known, seek is guaranteed to saturate
+    /// at the end of the source. For example given a source that reports a total duration
+    /// of 42 seconds calling `try_seek()` with 60 seconds as argument will seek to
+    /// 42 seconds.
+    ///
+    /// # Errors
+    /// This function will return [`SeekError::NotSupported`] if one of the underlying
+    /// sources does not support seeking.
+    ///
+    /// It will return an error if an implementation ran
+    /// into one during the seek.
+    ///
+    /// When seeking beyond the end of a source this
+    /// function might return an error if the duration of the source is not known.
     pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -129,18 +197,35 @@ impl Nyaa {
     /// You *can* use this on non-wasm targets, but it will be slower than calling `try_seek`
     /// directly.
     pub fn try_seek_with_decode(&mut self, position: Duration) -> Result<(), NyaaError> {
-        let Some(bytes) = self.current_bytes.as_ref() else {
-            return Ok(());
-        };
-
         let position = match self.duration() {
             Some(duration) => position.min(duration),
             None => position,
         };
 
+        if let Some(bytes) = self.current_shared_bytes.as_ref() {
+            let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+            return self.seek_with_decode_source(source, position);
+        }
+
+        if let Some(bytes) = self.current_static_bytes {
+            let source = Self::decoder_from_static_bytes(bytes)?;
+            return self.seek_with_decode_source(source, position);
+        }
+
+        Ok(())
+    }
+
+    fn seek_with_decode_source<S>(
+        &mut self,
+        mut source: S,
+        position: Duration,
+    ) -> Result<(), NyaaError>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
         // This decoder is NOT owned by the audio callback yet,
         // therefore this seek executes directly on this thread.
-        let mut source = Self::decoder_from_shared_bytes(bytes.clone())?;
 
         source.try_seek(position).map_err(NyaaError::Seek)?;
 
@@ -170,9 +255,17 @@ impl Nyaa {
         Ok(())
     }
 
-    pub fn duration_from_bytes(bytes: impl AsRef<[u8]>) -> Result<Option<Duration>, NyaaError> {
+    pub fn duration_from_shared_bytes(
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Option<Duration>, NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
         Ok(Self::decoder_from_shared_bytes(bytes)?.total_duration())
+    }
+
+    /// Returns the duration of static bytes, such as data from `include_bytes!`, without copying
+    /// the encoded audio onto the heap.
+    pub fn duration_from_static_bytes(bytes: &'static [u8]) -> Result<Option<Duration>, NyaaError> {
+        Ok(Self::decoder_from_static_bytes(bytes)?.total_duration())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -183,6 +276,13 @@ impl Nyaa {
             .total_duration())
     }
 
+    /// Returns the position of the sound that's being played.
+    ///
+    /// This takes into account any speedup or delay applied.
+    ///
+    /// Example: if you apply a speedup of *2* to an mp3 decoder source and
+    /// [`get_pos()`](Player::get_pos) returns *5s* then the position in the mp3
+    /// recording is *10s* from its start.
     pub fn position(&self) -> Duration {
         let position = self.position_offset.saturating_add(self.player.get_pos());
 
@@ -192,38 +292,62 @@ impl Nyaa {
         }
     }
 
+    /// Returns the total duration of the audio source.
     pub fn duration(&self) -> Option<Duration> {
         *self.duration.lock().unwrap()
     }
 
+    /// Pauses playback of this player.
+    ///
+    /// No effect if already paused.
+    ///
+    /// A paused sink can be resumed with `play()`.
     pub fn pause(&self) {
         self.player.pause();
     }
 
+    /// Resumes playback of a paused player.
+    ///
+    /// No effect if not paused.
     pub fn resume(&self) {
         self.player.play();
     }
 
+    /// Stops the sink by emptying the queue.
     pub fn stop(&self) {
         self.player.stop();
     }
 
+    /// Changes the volume of the sound.
+    ///
+    /// The value `1.0` is the "normal" volume (unfiltered input). Any value other than `1.0` will
+    /// multiply each sample by this value.
     pub fn set_volume(&self, volume: f32) {
         self.player.set_volume(volume);
     }
 
+    /// Gets the volume of the sound.
+    ///
+    /// The value `1.0` is the "normal" volume (unfiltered input). Any value other than 1.0 will
+    /// multiply each sample by this value.
     pub fn volume(&self) -> f32 {
         self.player.volume()
     }
 
+    /// Gets if a sink is paused
+    ///
+    /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
+    /// sink is paused.
     pub fn is_paused(&self) -> bool {
         self.player.is_paused()
     }
 
+    /// Returns true if this sink has no more sounds to play.
     pub fn is_empty(&self) -> bool {
         self.player.empty()
     }
 
+    /// Sleeps the current thread until the sound ends.
     pub fn wait_until_end(&self) {
         self.player.sleep_until_end();
     }

@@ -66,7 +66,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static GLOBAL: CountingAllocator = CountingAllocator;
 
-const MY_AUDIO_FILE: &[u8] = include_bytes!("../../THE UNFORGIVING.mp3");
+const MY_AUDIO_BYTES: &[u8] = include_bytes!("../../THE UNFORGIVING.mp3");
 
 struct App {
     nyaa: Option<Nyaa>,
@@ -76,7 +76,7 @@ struct App {
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let duration = match Nyaa::duration_from_bytes(MY_AUDIO_FILE) {
+        let duration = match Nyaa::duration_from_static_bytes(MY_AUDIO_BYTES) {
             Ok(Some(duration)) => duration,
             Ok(None) => Duration::ZERO,
             Err(error) => {
@@ -104,7 +104,7 @@ impl App {
         }
 
         if let Some(nyaa) = self.nyaa.as_mut() {
-            match nyaa.play_bytes(MY_AUDIO_FILE) {
+            match nyaa.play_static_bytes(MY_AUDIO_BYTES) {
                 Ok(()) => self.playing = true,
                 Err(error) => log::error!("could not play audio: {error}"),
             }
@@ -296,7 +296,7 @@ mod tests {
         let idle = memory_snapshot();
         let mut nyaa = Nyaa::new().expect("audio output device is unavailable");
 
-        nyaa.play_bytes(MY_AUDIO_FILE)
+        nyaa.play_static_bytes(MY_AUDIO_BYTES)
             .expect("embedded audio should be playable");
         thread::sleep(Duration::from_millis(250));
         let playing = memory_snapshot();
@@ -304,6 +304,15 @@ mod tests {
         nyaa.stop();
         thread::sleep(Duration::from_millis(250));
         let stopped = memory_snapshot();
+
+        assert!(
+            playing.live_bytes.saturating_sub(idle.live_bytes) < MY_AUDIO_BYTES.len() / 2,
+            "playing embedded audio should not copy the whole asset onto the heap"
+        );
+        assert!(
+            playing.peak_bytes.saturating_sub(idle.peak_bytes) < MY_AUDIO_BYTES.len() / 2,
+            "playing embedded audio should not allocate the whole asset"
+        );
 
         println!("audio memory report (process allocations):");
         print_memory_snapshot("idle", idle, idle);
