@@ -27,4 +27,10 @@ run = "oxfmt --write ."
 run = "cargo clippy --all-targets --all-features --workspace -- -D warnings"
 
 [tasks.test]
+depends = ["test:native", "test:wasm"]
+
+[tasks."test:native"]
 run = "cargo test --workspace -- -Zunstable-options --format=terse"
+
+[tasks."test:wasm"]
+run = "wasm-pack test --headless --chrome . "
