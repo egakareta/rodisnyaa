@@ -438,78 +438,114 @@ impl eframe::App for App {
 
                         let is_loading = self.nyaa.is_loading();
                         let button_size = ui.spacing().interact_size;
-                        let side_width = (control_width - button_size.x) / 2.0;
 
-                        ui.allocate_ui_with_layout(
+                        let (row_rect, _) = ui.allocate_exact_size(
                             egui::vec2(control_width, button_size.y),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(side_width, 20.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        let response = ui.add(
-                                            egui::DragValue::new(&mut position_secs)
-                                                .range(self.nyaa.seek_range())
-                                                .custom_formatter(|position, _| {
-                                                    format_timestamp_secs(position)
-                                                })
-                                                .custom_parser(|input| {
-                                                    parse_timestamp(input).map(f64::from)
-                                                }),
-                                        );
-
-                                        if response.changed() {
-                                            if let Err(error) =
-                                                self.nyaa.try_seek_secs(position_secs)
-                                            {
-                                                log::error!("could not seek audio: {error}");
-                                            }
-                                        }
-                                    },
-                                );
-
-                                let button = ui
-                                    .add_enabled_ui(!is_loading, |ui| {
-                                        ui.add_sized(
-                                            button_size,
-                                            egui::Button::new(egui::RichText::new(
-                                                if is_loading {
-                                                    "..."
-                                                } else if self.nyaa.is_playing() {
-                                                    "■"
-                                                } else {
-                                                    "▶"
-                                                },
-                                            )),
-                                        )
-                                    })
-                                    .inner
-                                    .on_hover_text(if is_loading {
-                                        "Loading"
-                                    } else if self.nyaa.is_playing() {
-                                        "Stop"
-                                    } else {
-                                        "Play"
-                                    });
-
-                                if button.clicked() {
-                                    if self.nyaa.is_playing() {
-                                        self.stop();
-                                    } else {
-                                        self.play();
-                                    }
-                                }
-
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(side_width, 20.0),
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(self.nyaa.duration_formatted());
-                                    },
-                                );
-                            },
+                            egui::Sense::hover(),
                         );
+
+                        let button_rect =
+                            egui::Rect::from_center_size(row_rect.center(), button_size);
+
+                        let left_rect = egui::Rect::from_min_max(
+                            row_rect.min,
+                            egui::pos2(button_rect.left(), row_rect.bottom()),
+                        );
+
+                        let mut left_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("position_control")
+                                .max_rect(left_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+
+                        let response = left_ui.add(
+                            egui::DragValue::new(&mut position_secs)
+                                .range(self.nyaa.seek_range())
+                                .custom_formatter(|position, _| format_timestamp_secs(position))
+                                .custom_parser(|input| parse_timestamp(input).map(f64::from)),
+                        );
+
+                        if response.changed() {
+                            if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
+                                log::error!("could not seek audio: {error}");
+                            }
+                        }
+
+                        let mut button_builder = egui::UiBuilder::new()
+                            .id_salt("play_button")
+                            .max_rect(button_rect)
+                            .layout(egui::Layout::centered_and_justified(
+                                egui::Direction::TopDown,
+                            ));
+
+                        if is_loading {
+                            button_builder = button_builder.disabled();
+                        }
+
+                        let mut button_ui = ui.new_child(button_builder);
+
+                        let button =
+                            button_ui
+                                .add(egui::Button::new(""))
+                                .on_hover_text(if is_loading {
+                                    "Loading"
+                                } else if self.nyaa.is_playing() {
+                                    "Stop"
+                                } else {
+                                    "Play"
+                                });
+
+                        let center = button.rect.center();
+                        let icon_color = button_ui.style().interact(&button).fg_stroke.color;
+
+                        if is_loading {
+                            button_ui.painter().text(
+                                center,
+                                egui::Align2::CENTER_CENTER,
+                                "...",
+                                egui::TextStyle::Button.resolve(button_ui.style()),
+                                icon_color,
+                            );
+                        } else if self.nyaa.is_playing() {
+                            let size = 8.0;
+                            button_ui.painter().rect_filled(
+                                egui::Rect::from_center_size(center, egui::vec2(size, size)),
+                                0.0,
+                                icon_color,
+                            );
+                        } else {
+                            let half_h = 6.0;
+                            let half_w = 5.0;
+
+                            button_ui.painter().add(egui::Shape::convex_polygon(
+                                vec![
+                                    egui::pos2(center.x - half_w, center.y - half_h),
+                                    egui::pos2(center.x - half_w, center.y + half_h),
+                                    egui::pos2(center.x + half_w, center.y),
+                                ],
+                                icon_color,
+                                egui::Stroke::NONE,
+                            ));
+                        }
+
+                        if button.clicked() {
+                            if self.nyaa.is_playing() {
+                                self.stop();
+                            } else {
+                                self.play();
+                            }
+                        }
+
+                        ui.painter().text(
+                            egui::pos2(row_rect.right(), row_rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            self.nyaa.duration_formatted(),
+                            egui::TextStyle::Body.resolve(ui.style()),
+                            ui.visuals().text_color(),
+                        );
+
+                        ui.add_space(30.0);
 
                         let mut speed = self.nyaa.speed();
                         let response = ui.add(
