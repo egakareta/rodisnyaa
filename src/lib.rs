@@ -90,6 +90,23 @@ impl Nyaa {
     }
 
     pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self.player.try_seek(position).map_err(NyaaError::Seek);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.try_seek_with_decode(position)
+        }
+    }
+
+    /// Functionally equivalent to `try_seek`, but avoids the deadlock that occurs when calling
+    /// [`Player::try_seek`] on the same thread as the audio callback.
+    ///
+    /// You *can* use this on non-wasm targets, but it will be slower than calling `try_seek`
+    /// directly.
+    pub fn try_seek_with_decode(&mut self, position: Duration) -> Result<(), NyaaError> {
         let Some(bytes) = self.current_bytes.as_ref() else {
             return Ok(());
         };
