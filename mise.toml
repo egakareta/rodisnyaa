@@ -1,6 +1,10 @@
 [tools]
+lefthook = "latest"
 rust = { version = "nightly-2026-03-12", components = [
     "clippy",
     "rustfmt",
     "rust-src",
 ] }
+
+[hooks]
+postinstall = ["lefthook install"]
