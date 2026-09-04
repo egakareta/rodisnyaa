@@ -1,3 +1,5 @@
+use std::time::Duration as StdDuration;
+
 use web_time::Duration;
 
 use eframe::egui;
@@ -8,13 +10,24 @@ const MY_AUDIO_FILE: &[u8] = include_bytes!("../../polar 240 yay.mp3");
 struct App {
     nyaa: Option<Nyaa>,
     playing: bool,
+    duration: StdDuration,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
+        let duration = match Nyaa::duration_from_bytes(MY_AUDIO_FILE) {
+            Ok(Some(duration)) => duration,
+            Ok(None) => StdDuration::ZERO,
+            Err(error) => {
+                log::error!("could not determine audio duration: {error}");
+                StdDuration::ZERO
+            }
+        };
+
         Self {
             nyaa: None,
             playing: false,
+            duration,
         }
     }
 
@@ -29,19 +42,32 @@ impl App {
             }
         }
 
-        if let Some(nyaa) = self.nyaa.as_ref() {
+        if let Some(nyaa) = self.nyaa.as_mut() {
             match nyaa.play_bytes(MY_AUDIO_FILE) {
                 Ok(()) => self.playing = true,
                 Err(error) => log::error!("could not play audio: {error}"),
             }
         }
     }
-
+    
     fn stop(&mut self) {
-        if let Some(nyaa) = self.nyaa.as_ref() {
+        if let Some(nyaa) = self.nyaa.as_mut() {
             nyaa.stop();
         }
         self.playing = false;
+    }
+}
+
+fn format_timestamp(duration: StdDuration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }
 
@@ -67,6 +93,57 @@ impl eframe::App for App {
                         self.play();
                     }
                 }
+
+                let duration_secs = self.duration.as_secs_f32();
+                let slider_max = duration_secs.max(1.0);
+                let slider_width = ui.available_width().min(360.0);
+                let mut position_secs = if self.playing {
+                    self.nyaa
+                        .as_ref()
+                        .map(Nyaa::position)
+                        .unwrap_or_default()
+                        .as_secs_f32()
+                } else {
+                    0.0
+                }
+                .min(duration_secs);
+                let response = ui
+                    .add_enabled_ui(self.playing, |ui| {
+                        ui.add_sized(
+                            [slider_width, 20.0],
+                            egui::Slider::new(&mut position_secs, 0.0..=slider_max)
+                                .show_value(false),
+                        )
+                    })
+                    .inner;
+
+                if response.drag_started() {
+                    if let Some(nyaa) = self.nyaa.as_ref() {
+                        nyaa.pause();
+                    }
+                }
+
+                if response.changed() {
+                    if let Some(nyaa) = self.nyaa.as_mut() {
+                        if let Err(error) = nyaa.try_seek(StdDuration::from_secs_f32(position_secs))
+                        {
+                            log::error!("could not seek audio: {error}");
+                        }
+                    }
+                }
+
+                if response.drag_stopped() {
+                    if let Some(nyaa) = self.nyaa.as_mut() {
+                        nyaa.resume();
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label(format_timestamp(StdDuration::from_secs_f32(position_secs)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(format_timestamp(self.duration));
+                    });
+                });
             });
         });
     }
