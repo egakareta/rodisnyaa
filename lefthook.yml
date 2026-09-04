@@ -1,6 +1,8 @@
 pre-commit:
-  parallel: true
   commands:
+    oxfmt:
+      run: mise exec -- oxfmt
+      stage_fixed: true
     rustfmt:
       glob: "*.rs"
       run: mise exec -- cargo fmt --all

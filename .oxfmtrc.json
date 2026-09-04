@@ -1,0 +1,23 @@
+{
+    "insertFinalNewline": true,
+    "semi": true,
+    "singleQuote": false,
+    "useTabs": false,
+    "tabWidth": 4,
+    "printWidth": 80,
+    "sortPackageJson": false,
+    "overrides": [
+        {
+            "files": ["*.yml", "*.yaml"],
+            "options": {
+                "tabWidth": 2
+            }
+        },
+        {
+            "files": ["*.jsonc"],
+            "options": {
+                "trailingComma": "none"
+            }
+        }
+    ]
+}
