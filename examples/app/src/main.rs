@@ -113,19 +113,6 @@ impl App {
     }
 }
 
-fn format_timestamp(duration: Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let hours = total_seconds / 3_600;
-    let minutes = (total_seconds % 3_600) / 60;
-    let seconds = total_seconds % 60;
-
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(Err(error)) = self.nyaa.poll_pending_playback() {
@@ -204,11 +191,7 @@ impl eframe::App for App {
                     }
                 }
 
-                let duration = self.nyaa.duration().unwrap_or_default();
-                let duration_secs = duration.as_secs_f32();
-                let slider_max = duration_secs.max(1.0);
                 let control_width = ui.available_width().min(360.0);
-                let mut position_secs = self.nyaa.position().as_secs_f32().min(duration_secs);
 
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), 0.0),
@@ -217,6 +200,14 @@ impl eframe::App for App {
                         ui.set_width(control_width);
 
                         ui.spacing_mut().slider_width = control_width;
+
+                        let slider_max: f32 = self
+                            .nyaa
+                            .duration()
+                            .unwrap_or_default()
+                            .as_secs_f32()
+                            .max(1.0);
+                        let mut position_secs: f32 = self.nyaa.clamped_position().as_secs_f32();
 
                         let response = ui.add(
                             egui::Slider::new(&mut position_secs, 0.0..=slider_max)
@@ -228,9 +219,7 @@ impl eframe::App for App {
                         }
 
                         if response.changed() {
-                            if let Err(error) =
-                                self.nyaa.try_seek(Duration::from_secs_f32(position_secs))
-                            {
+                            if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
                                 log::error!("could not seek audio: {error}");
                             }
                         }
@@ -243,12 +232,12 @@ impl eframe::App for App {
                             egui::vec2(control_width, 20.0),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
-                                ui.label(format_timestamp(Duration::from_secs_f32(position_secs)));
+                                ui.label(self.nyaa.position_formatted());
 
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        ui.label(format_timestamp(duration));
+                                        ui.label(self.nyaa.duration_formatted());
                                     },
                                 );
                             },

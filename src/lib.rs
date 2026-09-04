@@ -417,16 +417,6 @@ impl Nyaa {
     ///
     /// If there is no current source, this updates the reported position without starting
     /// playback.
-    ///
-    /// # Errors
-    /// This function will return [`SeekError::NotSupported`] if one of the underlying
-    /// sources does not support seeking.
-    ///
-    /// It will return an error if an implementation ran
-    /// into one during the seek.
-    ///
-    /// When seeking beyond the end of a source this
-    /// function might return an error if the duration of the source is not known.
     pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
         if self.set_position_if_empty(position) {
             return Ok(());
@@ -450,6 +440,11 @@ impl Nyaa {
         {
             self.try_seek_with_decode(position)
         }
+    }
+
+    /// Convenience version of [`Nyaa::try_seek()`] that accepts the position in seconds.
+    pub fn try_seek_secs(&mut self, position_secs: f32) -> Result<(), NyaaError> {
+        self.try_seek(Duration::from_secs_f32(position_secs))
     }
 
     /// Functionally equivalent to `try_seek`, but avoids the deadlock that occurs when calling
@@ -615,9 +610,32 @@ impl Nyaa {
         }
     }
 
+    /// Returns the position of the sound that's being played in the format `H:MM:SS` or `M:SS`.
+    pub fn position_formatted(&self) -> String {
+        format_timestamp(self.position())
+    }
+
     /// Returns the total duration of the audio source.
     pub fn duration(&self) -> Option<Duration> {
         *self.duration.lock().unwrap()
+    }
+
+    /// Returns the total duration of the audio source in the format `H:MM:SS` or `M:SS`.
+    ///
+    /// Falls back to `0:00` if the duration is unknown.
+    pub fn duration_formatted(&self) -> String {
+        self.duration()
+            .map(format_timestamp)
+            .unwrap_or_else(|| "0:00".into())
+    }
+
+    /// [`Nyaa::position()`] clamped to the range `[0, duration]`.
+    ///
+    /// This is useful for user input.
+    pub fn clamped_position(&self) -> Duration {
+        self.position()
+            .min(self.duration().unwrap_or_default())
+            .max(Duration::ZERO)
     }
 
     /// Pauses playback of this player.
@@ -702,6 +720,20 @@ impl Nyaa {
         if let Some(player) = self.player.as_ref() {
             player.sleep_until_end();
         }
+    }
+}
+
+/// Formats a [`Duration`] as a string in the format `H:MM:SS` or `M:SS`.
+pub fn format_timestamp(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }
 
