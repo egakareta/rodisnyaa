@@ -215,6 +215,9 @@ pub struct Nyaa {
     /// You should probably use [`Nyaa::position()`] instead.
     position_offset: Duration,
 
+    /// The player position corresponding to [`Self::position_offset`].
+    player_position_anchor: Duration,
+
     /// The playback speed applied to the player.
     speed: f32,
 
@@ -252,6 +255,7 @@ impl Nyaa {
             current_shared_bytes: None,
             current_static_bytes: None,
             position_offset: Duration::ZERO,
+            player_position_anchor: Duration::ZERO,
             speed: 1.0,
             position_is_held: true,
             #[cfg(target_arch = "wasm32")]
@@ -318,6 +322,7 @@ impl Nyaa {
 
         let duration = source.total_duration();
         self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         *self.duration.lock().unwrap() = duration;
 
@@ -338,6 +343,7 @@ impl Nyaa {
         self.current_shared_bytes = None;
         self.current_static_bytes = None;
         self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
         self.position_is_held = false;
 
         Ok(())
@@ -364,6 +370,7 @@ impl Nyaa {
         self.current_shared_bytes = None;
         self.current_static_bytes = Some(bytes);
         self.position_offset = Duration::ZERO;
+        self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         *self.duration.lock().unwrap() = duration;
 
@@ -500,7 +507,8 @@ impl Nyaa {
             match self.player.as_ref() {
                 Some(player) => {
                     player.try_seek(position).map_err(NyaaError::Seek)?;
-                    self.position_offset = Duration::ZERO;
+                    self.position_offset = position;
+                    self.player_position_anchor = position;
                     self.position_is_held = false;
 
                     Ok(())
@@ -572,6 +580,7 @@ impl Nyaa {
         }
 
         self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
 
         true
@@ -620,6 +629,7 @@ impl Nyaa {
         self.player = Some(new_player);
 
         self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
         self.position_is_held = false;
 
         Ok(())
@@ -676,7 +686,15 @@ impl Nyaa {
         } else {
             self.player.as_ref().map_or(Duration::ZERO, Player::get_pos)
         };
-        let position = self.position_offset.saturating_add(player_position);
+
+        self.position_at_player_time(player_position)
+    }
+
+    fn position_at_player_time(&self, player_position: Duration) -> Duration {
+        let elapsed = player_position.saturating_sub(self.player_position_anchor);
+        let position = self
+            .position_offset
+            .saturating_add(elapsed.mul_f32(self.speed));
 
         match self.duration() {
             Some(duration) => position.min(duration),
@@ -748,6 +766,7 @@ impl Nyaa {
         }
 
         self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
     }
 
@@ -774,6 +793,12 @@ impl Nyaa {
     /// A value of `1.0` uses the original speed. For example, `0.5` plays at half speed and
     /// `2.0` plays at double speed. Pitch changes by the same factor.
     pub fn set_speed(&mut self, speed: f32) {
+        if !self.position_is_held {
+            let player_position = self.player.as_ref().map_or(Duration::ZERO, Player::get_pos);
+            self.position_offset = self.position_at_player_time(player_position);
+            self.player_position_anchor = player_position;
+        }
+
         self.speed = speed;
 
         if let Some(player) = self.player.as_ref() {
@@ -964,5 +989,31 @@ mod tests {
             .expect("embedded audio should be playable");
 
         assert_eq!(nyaa.speed(), 1.5);
+    }
+
+    #[test]
+    fn position_tracks_source_time_when_speed_changes() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+        thread::sleep(Duration::from_millis(200));
+
+        let before_speed_change = nyaa.position();
+        nyaa.set_speed(2.0);
+        let after_speed_change = nyaa.position();
+
+        assert!(
+            after_speed_change.saturating_sub(before_speed_change) < Duration::from_millis(100),
+            "changing speed jumped the position from {before_speed_change:?} to {after_speed_change:?}"
+        );
+
+        thread::sleep(Duration::from_millis(250));
+        let advancement = nyaa.position().saturating_sub(after_speed_change);
+
+        assert!(
+            advancement >= Duration::from_millis(350),
+            "position advanced only {advancement:?} during 250ms of playback at 2x speed"
+        );
     }
 }
