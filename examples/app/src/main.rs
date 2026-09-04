@@ -331,7 +331,7 @@ fn main() {
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::thread;
@@ -393,5 +393,183 @@ mod tests {
         print_memory_snapshot("idle", idle, idle);
         print_memory_snapshot("playing", playing, idle);
         print_memory_snapshot("stopped", stopped, idle);
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    const AUDIO_BYTES_LEN: usize = MY_AUDIO_BYTES.len();
+
+    #[derive(Clone, Copy)]
+    struct MemorySnapshot {
+        live_bytes: usize,
+        peak_bytes: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MemoryReport {
+        idle: MemorySnapshot,
+        playing: MemorySnapshot,
+        stopped: MemorySnapshot,
+    }
+
+    fn memory_snapshot() -> MemorySnapshot {
+        MemorySnapshot {
+            live_bytes: LIVE_BYTES.load(Ordering::Relaxed),
+            peak_bytes: PEAK_BYTES.load(Ordering::Relaxed),
+        }
+    }
+
+    fn format_mib(bytes: usize) -> String {
+        format!("{:.2}", bytes as f64 / 1024.0 / 1024.0)
+    }
+
+    fn print_memory_snapshot(label: &str, snapshot: MemorySnapshot, idle: MemorySnapshot) {
+        let live_delta = snapshot.live_bytes as isize - idle.live_bytes as isize;
+        let peak_delta = snapshot.peak_bytes as isize - idle.peak_bytes as isize;
+        let message = format!(
+            "{label:>16}: live={} MiB ({:+.2} MiB), peak={} MiB ({:+.2} MiB)",
+            format_mib(snapshot.live_bytes),
+            live_delta as f64 / 1024.0 / 1024.0,
+            format_mib(snapshot.peak_bytes),
+            peak_delta as f64 / 1024.0 / 1024.0,
+        );
+
+        web_sys::console::log_1(&JsValue::from_str(&message));
+    }
+
+    async fn wait_for_audio_settle() {
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let callback = Closure::once_into_js(move || {
+                resolve
+                    .call0(&JsValue::UNDEFINED)
+                    .expect("timer promise should resolve");
+            });
+
+            web_sys::window()
+                .expect("browser window is unavailable")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    callback.unchecked_ref(),
+                    250,
+                )
+                .expect("browser timer should be scheduled");
+        });
+
+        JsFuture::from(promise)
+            .await
+            .expect("audio settle timer should resolve");
+    }
+
+    fn object_url_for_audio(bytes: &[u8]) -> String {
+        let array = js_sys::Uint8Array::from(bytes);
+        let parts = js_sys::Array::new();
+        parts.push(&array);
+        let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
+            .expect("audio blob should be created");
+
+        web_sys::Url::create_object_url_with_blob(&blob)
+            .expect("audio object URL should be created")
+    }
+
+    async fn measure_playback(use_asset: bool) -> MemoryReport {
+        let asset_url = use_asset.then(|| object_url_for_audio(MY_AUDIO_BYTES));
+        let asset = asset_url
+            .as_deref()
+            .map(|url| AudioAsset::new("missing/native/audio.wav", url));
+        let mut nyaa = Nyaa::new().expect("audio output device is unavailable");
+        let idle = memory_snapshot();
+
+        if let Some(asset) = asset.as_ref() {
+            nyaa.play_asset(asset)
+                .await
+                .expect("browser audio asset should be playable");
+        } else {
+            nyaa.play_static_bytes(MY_AUDIO_BYTES)
+                .expect("static audio should be playable");
+        }
+        wait_for_audio_settle().await;
+        let playing = memory_snapshot();
+
+        nyaa.stop();
+        wait_for_audio_settle().await;
+        let stopped = memory_snapshot();
+
+        if let Some(url) = asset_url {
+            web_sys::Url::revoke_object_url(&url).expect("audio object URL should be revoked");
+        }
+
+        MemoryReport {
+            idle,
+            playing,
+            stopped,
+        }
+    }
+
+    fn assert_static_memory_report(report: MemoryReport) {
+        let playing_live_delta = report
+            .playing
+            .live_bytes
+            .saturating_sub(report.idle.live_bytes);
+        let playing_peak_delta = report
+            .playing
+            .peak_bytes
+            .saturating_sub(report.idle.peak_bytes);
+
+        assert!(
+            playing_live_delta < AUDIO_BYTES_LEN / 2,
+            "static bytes playback allocated {playing_live_delta} live bytes (peak delta {playing_peak_delta}); it should not copy the whole encoded asset onto the heap"
+        );
+        assert!(
+            playing_peak_delta < AUDIO_BYTES_LEN / 2,
+            "static bytes playback allocated a {playing_peak_delta}-byte peak delta; it should not allocate the whole encoded asset"
+        );
+    }
+
+    fn assert_file_memory_report(report: MemoryReport) {
+        let playing_live_delta = report
+            .playing
+            .live_bytes
+            .saturating_sub(report.idle.live_bytes);
+        let playing_peak_delta = report
+            .playing
+            .peak_bytes
+            .saturating_sub(report.idle.peak_bytes);
+
+        assert!(
+            playing_live_delta >= AUDIO_BYTES_LEN / 2,
+            "file playback retained only {playing_live_delta} live bytes; it should retain the fetched encoded asset"
+        );
+        assert!(
+            playing_peak_delta >= AUDIO_BYTES_LEN / 2,
+            "file playback allocated only a {playing_peak_delta}-byte peak delta; it should allocate the fetched encoded asset"
+        );
+    }
+
+    fn print_memory_report(label: &str, report: MemoryReport) {
+        web_sys::console::log_1(&JsValue::from_str(&format!(
+            "{label} audio memory report (WASM allocations):"
+        )));
+        print_memory_snapshot("idle", report.idle, report.idle);
+        print_memory_snapshot("playing", report.playing, report.idle);
+        print_memory_snapshot("stopped", report.stopped, report.idle);
+    }
+
+    #[wasm_bindgen_test]
+    async fn reports_memory_for_static_and_file_audio() {
+        let static_bytes = measure_playback(false).await;
+        let file = measure_playback(true).await;
+
+        assert_static_memory_report(static_bytes);
+        assert_file_memory_report(file);
+
+        print_memory_report("static bytes", static_bytes);
+        print_memory_report("file", file);
     }
 }

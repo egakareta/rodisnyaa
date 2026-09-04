@@ -33,7 +33,13 @@ depends = ["test:native", "test:wasm", "test:examples:app"]
 run = "cargo test -- --nocapture"
 
 [tasks."test:wasm"]
-run = "WASM_BINDGEN_TEST_NO_CAPTURE=1 wasm-pack test --headless --chrome ."
+run = "wasm-pack test --headless --chrome . -- --nocapture"
 
 [tasks."test:examples:app"]
+depends = ["test:examples:app:native", "test:examples:app:wasm"]
+
+[tasks."test:examples:app:native"]
 run = "cargo test --manifest-path examples/app/Cargo.toml -- --nocapture"
+
+[tasks."test:examples:app:wasm"]
+run = "wasm-pack test --headless --chrome examples/app -- --nocapture"
