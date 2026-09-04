@@ -1,5 +1,3 @@
-use std::time::Duration as StdDuration;
-
 use web_time::Duration;
 
 use eframe::egui;
@@ -73,17 +71,17 @@ const MY_AUDIO_FILE: &[u8] = include_bytes!("../../THE UNFORGIVING.mp3");
 struct App {
     nyaa: Option<Nyaa>,
     playing: bool,
-    duration: StdDuration,
+    duration: Duration,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
         let duration = match Nyaa::duration_from_bytes(MY_AUDIO_FILE) {
             Ok(Some(duration)) => duration,
-            Ok(None) => StdDuration::ZERO,
+            Ok(None) => Duration::ZERO,
             Err(error) => {
                 log::error!("could not determine audio duration: {error}");
-                StdDuration::ZERO
+                Duration::ZERO
             }
         };
 
@@ -121,7 +119,7 @@ impl App {
     }
 }
 
-fn format_timestamp(duration: StdDuration) -> String {
+fn format_timestamp(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
     let hours = total_seconds / 3_600;
     let minutes = (total_seconds % 3_600) / 60;
@@ -197,8 +195,7 @@ impl eframe::App for App {
 
                 if response.changed() {
                     if let Some(nyaa) = self.nyaa.as_mut() {
-                        if let Err(error) = nyaa.try_seek(StdDuration::from_secs_f32(position_secs))
-                        {
+                        if let Err(error) = nyaa.try_seek(Duration::from_secs_f32(position_secs)) {
                             log::error!("could not seek audio: {error}");
                         }
                     }
@@ -211,7 +208,7 @@ impl eframe::App for App {
                 }
 
                 ui.horizontal(|ui| {
-                    ui.label(format_timestamp(StdDuration::from_secs_f32(position_secs)));
+                    ui.label(format_timestamp(Duration::from_secs_f32(position_secs)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(format_timestamp(self.duration));
                     });
@@ -301,11 +298,11 @@ mod tests {
 
         nyaa.play_bytes(MY_AUDIO_FILE)
             .expect("embedded audio should be playable");
-        thread::sleep(StdDuration::from_millis(250));
+        thread::sleep(Duration::from_millis(250));
         let playing = memory_snapshot();
 
         nyaa.stop();
-        thread::sleep(StdDuration::from_millis(250));
+        thread::sleep(Duration::from_millis(250));
         let stopped = memory_snapshot();
 
         println!("audio memory report (process allocations):");
