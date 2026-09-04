@@ -1,0 +1,36 @@
+[package]
+name = "rodisnyaa"
+version = "0.1.0"
+edition = "2024"
+description = "nya"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "rodisnyaa"
+path = "src/lib.rs"
+
+[dependencies]
+cpal = { version = "0.17", features = ["wasm-bindgen"] }
+dasp_sample = "0.11"
+rodio = { version = "0.22", features = [
+    "mp3",
+    "playback",
+    "vorbis",
+    "wasm-bindgen",
+    "wav",
+] }
+thiserror = "2"
+parking_lot_core = { version = "0.9", features = ["nightly"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "AudioContext",
+    "AudioContextState",
+] }
+
+[dev-dependencies]
