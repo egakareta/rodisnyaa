@@ -6,7 +6,7 @@ use dasp_sample::FromSample;
 use js_sys::Uint8Array;
 use rodio::decoder::DecoderError;
 use rodio::source::SeekError;
-use rodio::{Decoder, DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, Player, Source};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 use std::io::{Cursor, Error};
@@ -24,10 +24,6 @@ use web_sys::Response;
 /// The error type for [`Nyaa`].
 #[derive(Debug, Error)]
 pub enum NyaaError {
-    /// Errors that might occur when interfacing with audio output.
-    #[error("failed to open audio output: {0}")]
-    Output(#[source] DeviceSinkError),
-
     /// The error type for I/O operations of the Read, Write, Seek, and associated traits.
     #[error("failed to open audio file: {0}")]
     File(#[source] Error),
@@ -113,10 +109,10 @@ async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
 /// Painless audio playback for native and web platforms.
 pub struct Nyaa {
     /// rodio [`MixerDeviceSink`]
-    mixer_device_sink: MixerDeviceSink,
+    mixer_device_sink: Option<MixerDeviceSink>,
 
     /// rodio [`Player`]
-    player: Player,
+    player: Option<Player>,
 
     /// The total duration of the current source, if known.
     ///
@@ -136,27 +132,33 @@ pub struct Nyaa {
 }
 
 impl Nyaa {
-    pub fn new() -> Result<Self, NyaaError> {
-        let mut mixer_device_sink =
-            DeviceSinkBuilder::open_default_sink().map_err(NyaaError::Output)?;
+    pub fn new() -> Self {
+        let (mixer_device_sink, player) = match DeviceSinkBuilder::open_default_sink() {
+            Ok(mut sink) => {
+                let player = Player::connect_new(sink.mixer());
+                sink.log_on_drop(false);
 
-        let player = Player::connect_new(mixer_device_sink.mixer());
+                (Some(sink), Some(player))
+            }
 
-        mixer_device_sink.log_on_drop(false);
+            Err(_) => (None, None),
+        };
 
-        Ok(Self {
+        Self {
             mixer_device_sink,
             player,
             duration: Mutex::new(None),
             current_shared_bytes: None,
             current_static_bytes: None,
             position_offset: Duration::ZERO,
-        })
+        }
     }
 
     /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
     pub fn log_on_drop(&mut self, log: bool) {
-        self.mixer_device_sink.log_on_drop(log);
+        if let Some(mixer_device_sink) = self.mixer_device_sink.as_mut() {
+            mixer_device_sink.log_on_drop(log);
+        }
     }
 
     fn decoder_from_shared_bytes(
@@ -190,13 +192,17 @@ impl Nyaa {
         f32: FromSample<S::Item>,
     {
         let duration = source.total_duration();
-        let new_player = Player::connect_new(self.mixer_device_sink.mixer());
+        let Some(mixer_device_sink) = self.mixer_device_sink.as_ref() else {
+            return;
+        };
+        let volume = self.player.as_ref().map_or(1.0, Player::volume);
+        let new_player = Player::connect_new(mixer_device_sink.mixer());
 
-        new_player.set_volume(self.player.volume());
+        new_player.set_volume(volume);
         new_player.append(source);
         new_player.play();
 
-        self.player = new_player;
+        self.player = Some(new_player);
         self.current_shared_bytes = None;
         self.current_static_bytes = None;
         self.position_offset = Duration::ZERO;
@@ -278,7 +284,10 @@ impl Nyaa {
     pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.player.try_seek(position).map_err(NyaaError::Seek)
+            match self.player.as_ref() {
+                Some(player) => player.try_seek(position).map_err(NyaaError::Seek),
+                None => Ok(()),
+            }
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -320,15 +329,21 @@ impl Nyaa {
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
     {
+        let (Some(mixer_device_sink), Some(player)) =
+            (self.mixer_device_sink.as_ref(), self.player.as_ref())
+        else {
+            return Ok(());
+        };
+
         // This decoder is NOT owned by the audio callback yet,
         // therefore this seek executes directly on this thread.
 
         source.try_seek(position).map_err(NyaaError::Seek)?;
 
-        let was_paused = self.player.is_paused();
-        let volume = self.player.volume();
+        let was_paused = player.is_paused();
+        let volume = player.volume();
 
-        let new_player = Player::connect_new(self.mixer_device_sink.mixer());
+        let new_player = Player::connect_new(mixer_device_sink.mixer());
 
         new_player.set_volume(volume);
 
@@ -344,7 +359,7 @@ impl Nyaa {
 
         // Dropping the old Player only marks its source as stopped.
         // It does not synchronously wait for WebAudio.
-        self.player = new_player;
+        self.player = Some(new_player);
 
         self.position_offset = position;
 
@@ -397,7 +412,8 @@ impl Nyaa {
     /// [`get_pos()`](Player::get_pos) returns *5s* then the position in the mp3
     /// recording is *10s* from its start.
     pub fn position(&self) -> Duration {
-        let position = self.position_offset.saturating_add(self.player.get_pos());
+        let player_position = self.player.as_ref().map_or(Duration::ZERO, Player::get_pos);
+        let position = self.position_offset.saturating_add(player_position);
 
         match self.duration() {
             Some(duration) => position.min(duration),
@@ -416,19 +432,25 @@ impl Nyaa {
     ///
     /// A paused sink can be resumed with `play()`.
     pub fn pause(&self) {
-        self.player.pause();
+        if let Some(player) = self.player.as_ref() {
+            player.pause();
+        }
     }
 
     /// Resumes playback of a paused player.
     ///
     /// No effect if not paused.
     pub fn resume(&self) {
-        self.player.play();
+        if let Some(player) = self.player.as_ref() {
+            player.play();
+        }
     }
 
     /// Stops the sink by emptying the queue.
     pub fn stop(&self) {
-        self.player.stop();
+        if let Some(player) = self.player.as_ref() {
+            player.stop();
+        }
     }
 
     /// Changes the volume of the sound.
@@ -436,7 +458,9 @@ impl Nyaa {
     /// The value `1.0` is the "normal" volume (unfiltered input). Any value other than `1.0` will
     /// multiply each sample by this value.
     pub fn set_volume(&self, volume: f32) {
-        self.player.set_volume(volume);
+        if let Some(player) = self.player.as_ref() {
+            player.set_volume(volume);
+        }
     }
 
     /// Gets the volume of the sound.
@@ -444,7 +468,7 @@ impl Nyaa {
     /// The value `1.0` is the "normal" volume (unfiltered input). Any value other than 1.0 will
     /// multiply each sample by this value.
     pub fn volume(&self) -> f32 {
-        self.player.volume()
+        self.player.as_ref().map_or(1.0, Player::volume)
     }
 
     /// Gets if a sink is playing
@@ -454,7 +478,9 @@ impl Nyaa {
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
     /// sink is playing.
     pub fn is_playing(&self) -> bool {
-        !self.player.is_paused()
+        self.player
+            .as_ref()
+            .is_some_and(|player| !player.is_paused())
     }
 
     /// Gets if a sink is paused
@@ -462,16 +488,18 @@ impl Nyaa {
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
     /// sink is paused.
     pub fn is_paused(&self) -> bool {
-        self.player.is_paused()
+        self.player.as_ref().is_some_and(Player::is_paused)
     }
 
     /// Returns true if this sink has no more sounds to play.
     pub fn is_empty(&self) -> bool {
-        self.player.empty()
+        self.player.as_ref().map_or(true, Player::empty)
     }
 
     /// Sleeps the current thread until the sound ends.
     pub fn wait_until_end(&self) {
-        self.player.sleep_until_end();
+        if let Some(player) = self.player.as_ref() {
+            player.sleep_until_end();
+        }
     }
 }
