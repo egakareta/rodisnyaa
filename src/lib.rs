@@ -1,9 +1,13 @@
 pub use rodio;
 pub use rodio::cpal;
 
+use dasp_sample::FromSample;
+#[cfg(target_arch = "wasm32")]
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs::File, io::Cursor, path::Path};
 
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use thiserror::Error;
@@ -69,12 +73,12 @@ impl Nyaa {
         Player::connect_new(self.mixer_device_sink.mixer())
     }
 
-    pub fn play_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
-        let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
-
-        let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+    fn play_source<S>(&mut self, source: S)
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
         let duration = source.total_duration();
-
         let new_player = self.fresh_player();
 
         new_player.set_volume(self.player.volume());
@@ -82,9 +86,27 @@ impl Nyaa {
         new_player.play();
 
         self.player = new_player;
-        self.current_bytes = Some(bytes);
+        self.current_bytes = None;
         self.position_offset = Duration::ZERO;
         *self.duration.lock().unwrap() = duration;
+    }
+
+    pub fn play_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
+        let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
+
+        let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+        self.play_source(source);
+        self.current_bytes = Some(bytes);
+
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
+        let file = File::open(path).map_err(NyaaError::File)?;
+        let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
+
+        self.play_source(source);
 
         Ok(())
     }
@@ -151,6 +173,14 @@ impl Nyaa {
     pub fn duration_from_bytes(bytes: impl AsRef<[u8]>) -> Result<Option<Duration>, NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
         Ok(Self::decoder_from_shared_bytes(bytes)?.total_duration())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn duration_from_file(path: impl AsRef<Path>) -> Result<Option<Duration>, NyaaError> {
+        let file = File::open(path).map_err(NyaaError::File)?;
+        Ok(Decoder::try_from(file)
+            .map_err(NyaaError::Decode)?
+            .total_duration())
     }
 
     pub fn position(&self) -> Duration {
