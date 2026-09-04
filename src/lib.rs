@@ -638,6 +638,13 @@ impl Nyaa {
             .max(Duration::ZERO)
     }
 
+    /// Attempts to produce a valid range for a seek slider, even if the duration is unknown.
+    ///
+    /// Will return `0.0..=1.0` if the duration is unknown, otherwise returns `0.0..=duration`.
+    pub fn seek_range(&self) -> std::ops::RangeInclusive<f32> {
+        0.0..=self.duration().unwrap_or_default().as_secs_f32().max(1.0)
+    }
+
     /// Pauses playback of this player.
     ///
     /// No effect if already paused.

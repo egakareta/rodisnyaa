@@ -201,16 +201,9 @@ impl eframe::App for App {
 
                         ui.spacing_mut().slider_width = control_width;
 
-                        let slider_max: f32 = self
-                            .nyaa
-                            .duration()
-                            .unwrap_or_default()
-                            .as_secs_f32()
-                            .max(1.0);
                         let mut position_secs: f32 = self.nyaa.clamped_position().as_secs_f32();
-
                         let response = ui.add(
-                            egui::Slider::new(&mut position_secs, 0.0..=slider_max)
+                            egui::Slider::new(&mut position_secs, self.nyaa.seek_range())
                                 .show_value(false),
                         );
 
