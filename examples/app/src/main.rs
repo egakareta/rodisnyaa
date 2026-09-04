@@ -352,20 +352,28 @@ impl eframe::App for App {
 
         ui.ctx().request_repaint_after(Duration::from_millis(250));
 
-        egui::Panel::top("fps_panel").show(ui, |ui| {
+        egui::Panel::top("top_panel").show(ui, |ui| {
             let fps = ui.ctx().input(|input| 1.0 / f64::from(input.unstable_dt));
-            ui.label(format!("i love rodisnyaa | fps: {fps:.0}"));
+
+            let live = LIVE_BYTES.load(Ordering::Relaxed);
+            let peak = PEAK_BYTES.load(Ordering::Relaxed);
+
+            ui.horizontal(|ui| {
+                ui.label(format!("i love rodisnyaa | fps: {fps:.0}"));
+
+                // Consume all remaining space except what the right label needs.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format!(
+                        "memory: {:.2}/{:.2} MiB",
+                        live as f64 / 1024.0 / 1024.0,
+                        peak as f64 / 1024.0 / 1024.0
+                    ));
+                });
+            });
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                let live = LIVE_BYTES.load(Ordering::Relaxed);
-                let peak = PEAK_BYTES.load(Ordering::Relaxed);
-
-                ui.label(format!("Memory: {:.2} MiB", live as f64 / 1024.0 / 1024.0));
-
-                ui.label(format!("Peak: {:.2} MiB", peak as f64 / 1024.0 / 1024.0));
-
                 self.show_waveform(ui);
 
                 let tab_width = 90.0;
