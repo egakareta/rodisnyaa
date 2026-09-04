@@ -246,7 +246,7 @@ impl Nyaa {
 
             self.play_source(source);
 
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -282,7 +282,7 @@ impl Nyaa {
     pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return self.player.try_seek(position).map_err(NyaaError::Seek);
+            self.player.try_seek(position).map_err(NyaaError::Seek)
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -360,9 +360,9 @@ impl Nyaa {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let file = File::open(asset.native_path()).map_err(NyaaError::File)?;
-            return Ok(Decoder::try_from(file)
+            Ok(Decoder::try_from(file)
                 .map_err(NyaaError::Decode)?
-                .total_duration());
+                .total_duration())
         }
 
         #[cfg(target_arch = "wasm32")]
