@@ -181,10 +181,6 @@ impl Nyaa {
             .map_err(NyaaError::Decode)
     }
 
-    fn fresh_player(&self) -> Player {
-        Player::connect_new(self.mixer_device_sink.mixer())
-    }
-
     /// Resumes playback of a paused player.
     ///
     /// No effect if not paused.
@@ -194,7 +190,7 @@ impl Nyaa {
         f32: FromSample<S::Item>,
     {
         let duration = source.total_duration();
-        let new_player = self.fresh_player();
+        let new_player = Player::connect_new(self.mixer_device_sink.mixer());
 
         new_player.set_volume(self.player.volume());
         new_player.append(source);
@@ -332,7 +328,7 @@ impl Nyaa {
         let was_paused = self.player.is_paused();
         let volume = self.player.volume();
 
-        let new_player = self.fresh_player();
+        let new_player = Player::connect_new(self.mixer_device_sink.mixer());
 
         new_player.set_volume(volume);
 
