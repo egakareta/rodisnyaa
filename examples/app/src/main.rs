@@ -550,17 +550,36 @@ impl eframe::App for App {
 
                         ui.add_space(30.0);
 
-                        let mut speed = self.nyaa.speed();
-                        let response = ui.add(
-                            egui::Slider::new(&mut speed, 0.5..=2.0)
-                                .text("Speed")
-                                .suffix("x")
-                                .logarithmic(true),
-                        );
+                        ui.columns(2, |columns| {
+                            let mut speed = self.nyaa.speed();
+                            let speed_width = columns[0].available_width();
+                            columns[0].label(format!("Speed: {speed:.2}x"));
+                            columns[0].spacing_mut().slider_width = speed_width;
 
-                        if response.changed() {
-                            self.nyaa.set_speed(speed);
-                        }
+                            let response = columns[0].add(
+                                egui::Slider::new(&mut speed, 0.5..=2.0)
+                                    .show_value(false)
+                                    .logarithmic(true),
+                            );
+
+                            if response.changed() {
+                                self.nyaa.set_speed(speed);
+                            }
+
+                            let mut volume = self.nyaa.volume() * 100.0;
+                            let volume_width = columns[1].available_width();
+                            columns[1].label(format!("Volume: {volume:.0}%"));
+                            columns[1].spacing_mut().slider_width = volume_width;
+
+                            let response = columns[1].add(
+                                egui::Slider::new(&mut volume, 0.0..=100.0)
+                                    .show_value(false),
+                            );
+
+                            if response.changed() {
+                                self.nyaa.set_volume(volume / 100.0);
+                            }
+                        });
                     },
                 );
             });
