@@ -43,3 +43,7 @@ run = "cargo test --manifest-path examples/app/Cargo.toml -- --nocapture"
 
 [tasks."test:examples:app:wasm"]
 run = "wasm-pack test --headless --chrome examples/app -- --nocapture"
+
+[tasks."serve:examples:app"]
+dir = "{{config_root}}/examples/app"
+run = "trunk serve"
