@@ -451,6 +451,16 @@ impl Nyaa {
         self.player.volume()
     }
 
+    /// Gets if a sink is playing
+    ///
+    /// Equivalent to the inverse of [`Nyaa::is_paused()`].
+    ///
+    /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
+    /// sink is playing.
+    pub fn is_playing(&self) -> bool {
+        !self.player.is_paused()
+    }
+
     /// Gets if a sink is paused
     ///
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
