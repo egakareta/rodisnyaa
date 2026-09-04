@@ -1,3 +1,7 @@
 {
-    "rust-analyzer.diagnostics.disabled": ["inactive-code"]
+    "rust-analyzer.diagnostics.disabled": ["inactive-code"],
+    "rust-analyzer.linkedProjects": [
+        "./Cargo.toml",
+        "./examples/app/Cargo.toml"
+    ]
 }
