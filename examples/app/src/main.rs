@@ -1,7 +1,7 @@
 use web_time::Duration;
 
 use eframe::egui;
-use futures::{FutureExt, future::LocalBoxFuture, task::noop_waker_ref};
+use futures::{future::LocalBoxFuture, task::noop_waker_ref, FutureExt};
 use rodisnyaa::{AudioAsset, Nyaa, NyaaError};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -116,12 +116,16 @@ impl App {
         let mut nyaa = Nyaa::new();
         let audio_mode = self.audio_mode;
         let audio_asset = self.audio_asset.clone();
+        let start_position = self.nyaa.position();
 
         self.pending_playback = Some(
             async move {
-                let result = match audio_mode {
-                    AudioMode::StaticBytes => nyaa.play_static_bytes(MY_AUDIO_BYTES),
-                    AudioMode::File => nyaa.play_asset(&audio_asset).await,
+                let result = match nyaa.try_seek(start_position) {
+                    Ok(()) => match audio_mode {
+                        AudioMode::StaticBytes => nyaa.play_static_bytes(MY_AUDIO_BYTES),
+                        AudioMode::File => nyaa.play_asset(&audio_asset).await,
+                    },
+                    Err(error) => Err(error),
                 };
                 (nyaa, result)
             }
@@ -190,13 +194,37 @@ impl eframe::App for App {
 
                 ui.label(format!("Peak: {:.2} MiB", peak as f64 / 1024.0 / 1024.0));
 
+                let tab_width = 90.0;
+                let tab_height = ui.spacing().interact_size.y;
+                let gap = ui.spacing().item_spacing.x;
+                let tabs_width = tab_width * 2.0 + gap;
+
                 ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut self.audio_mode,
-                        AudioMode::StaticBytes,
-                        "Static bytes",
-                    );
-                    ui.selectable_value(&mut self.audio_mode, AudioMode::File, "File");
+                    let offset = ((ui.available_width() - tabs_width) / 2.0).max(0.0);
+                    ui.add_space(offset);
+
+                    if ui
+                        .add_sized(
+                            [tab_width, tab_height],
+                            egui::Button::selectable(
+                                self.audio_mode == AudioMode::StaticBytes,
+                                "Static bytes",
+                            ),
+                        )
+                        .clicked()
+                    {
+                        self.audio_mode = AudioMode::StaticBytes;
+                    }
+
+                    if ui
+                        .add_sized(
+                            [tab_width, tab_height],
+                            egui::Button::selectable(self.audio_mode == AudioMode::File, "File"),
+                        )
+                        .clicked()
+                    {
+                        self.audio_mode = AudioMode::File;
+                    }
                 });
 
                 let is_loading = self.pending_playback.is_some();
@@ -221,34 +249,54 @@ impl eframe::App for App {
 
                 let duration_secs = self.duration.as_secs_f32();
                 let slider_max = duration_secs.max(1.0);
-                let slider_width = ui.available_width().min(360.0);
+                let control_width = ui.available_width().min(360.0);
                 let mut position_secs = self.nyaa.position().as_secs_f32().min(duration_secs);
 
-                let response = ui.add_sized(
-                    [slider_width, 20.0],
-                    egui::Slider::new(&mut position_secs, 0.0..=slider_max).show_value(false),
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 0.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.set_width(control_width);
+
+                        ui.spacing_mut().slider_width = control_width;
+
+                        let response = ui.add(
+                            egui::Slider::new(&mut position_secs, 0.0..=slider_max)
+                                .show_value(false),
+                        );
+
+                        if response.drag_started() {
+                            self.nyaa.pause();
+                        }
+
+                        if response.changed() {
+                            if let Err(error) =
+                                self.nyaa.try_seek(Duration::from_secs_f32(position_secs))
+                            {
+                                log::error!("could not seek audio: {error}");
+                            }
+                        }
+
+                        if response.drag_stopped() {
+                            self.nyaa.resume();
+                        }
+
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(control_width, 20.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(format_timestamp(Duration::from_secs_f32(position_secs)));
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(format_timestamp(self.duration));
+                                    },
+                                );
+                            },
+                        );
+                    },
                 );
-
-                if response.drag_started() {
-                    self.nyaa.pause();
-                }
-
-                if response.changed() {
-                    if let Err(error) = self.nyaa.try_seek(Duration::from_secs_f32(position_secs)) {
-                        log::error!("could not seek audio: {error}");
-                    }
-                }
-
-                if response.drag_stopped() {
-                    self.nyaa.resume();
-                }
-
-                ui.horizontal(|ui| {
-                    ui.label(format_timestamp(Duration::from_secs_f32(position_secs)));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(format_timestamp(self.duration));
-                    });
-                });
             });
         });
     }
@@ -360,7 +408,7 @@ mod tests {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
     use super::*;
-    use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 

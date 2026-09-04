@@ -192,14 +192,27 @@ impl Nyaa {
     /// Resumes playback of a paused player.
     ///
     /// No effect if not paused.
-    fn play_source<S>(&mut self, source: S)
+    fn play_source<S>(&mut self, mut source: S) -> Result<(), NyaaError>
     where
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
     {
+        let position = if self.is_empty() {
+            match source.total_duration() {
+                Some(duration) => self.position_offset.min(duration),
+                None => self.position_offset,
+            }
+        } else {
+            Duration::ZERO
+        };
+
+        if !position.is_zero() {
+            source.try_seek(position).map_err(NyaaError::Seek)?;
+        }
+
         let duration = source.total_duration();
         let Some(mixer_device_sink) = self.mixer_device_sink.as_ref() else {
-            return;
+            return Ok(());
         };
         let volume = self.player.as_ref().map_or(1.0, Player::volume);
         let new_player = Player::connect_new(mixer_device_sink.mixer());
@@ -211,15 +224,17 @@ impl Nyaa {
         self.player = Some(new_player);
         self.current_shared_bytes = None;
         self.current_static_bytes = None;
-        self.position_offset = Duration::ZERO;
+        self.position_offset = position;
         *self.duration.lock().unwrap() = duration;
+
+        Ok(())
     }
 
     pub fn play_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
 
         let source = Self::decoder_from_shared_bytes(bytes.clone())?;
-        self.play_source(source);
+        self.play_source(source)?;
         self.current_shared_bytes = Some(bytes);
 
         Ok(())
@@ -229,7 +244,7 @@ impl Nyaa {
     /// copying the encoded audio onto the heap.
     pub fn play_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
         let source = Self::decoder_from_static_bytes(bytes)?;
-        self.play_source(source);
+        self.play_source(source)?;
         self.current_static_bytes = Some(bytes);
 
         Ok(())
@@ -240,9 +255,7 @@ impl Nyaa {
         let file = File::open(path).map_err(NyaaError::File)?;
         let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
 
-        self.play_source(source);
-
-        Ok(())
+        self.play_source(source)
     }
 
     /// Plays an audio asset using its native path or browser URL.
@@ -252,9 +265,7 @@ impl Nyaa {
             let file = File::open(asset.native_path()).map_err(NyaaError::File)?;
             let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
 
-            self.play_source(source);
-
-            Ok(())
+            self.play_source(source)
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -262,7 +273,7 @@ impl Nyaa {
             let bytes = fetch_browser_asset(asset.wasm_url()).await?;
             let source = Self::decoder_from_shared_bytes(bytes.clone())?;
 
-            self.play_source(source);
+            self.play_source(source)?;
             self.current_shared_bytes = Some(bytes);
 
             Ok(())
@@ -278,6 +289,9 @@ impl Nyaa {
     /// of 42 seconds calling `try_seek()` with 60 seconds as argument will seek to
     /// 42 seconds.
     ///
+    /// If there is no current source, this updates the reported position without starting
+    /// playback.
+    ///
     /// # Errors
     /// This function will return [`SeekError::NotSupported`] if one of the underlying
     /// sources does not support seeking.
@@ -288,6 +302,10 @@ impl Nyaa {
     /// When seeking beyond the end of a source this
     /// function might return an error if the duration of the source is not known.
     pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
+        if self.set_position_if_empty(position) {
+            return Ok(());
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             match self.player.as_ref() {
@@ -308,6 +326,10 @@ impl Nyaa {
     /// You *can* use this on non-wasm targets, but it will be slower than calling `try_seek`
     /// directly.
     pub fn try_seek_with_decode(&mut self, position: Duration) -> Result<(), NyaaError> {
+        if self.set_position_if_empty(position) {
+            return Ok(());
+        }
+
         let position = match self.duration() {
             Some(duration) => position.min(duration),
             None => position,
@@ -324,6 +346,34 @@ impl Nyaa {
         }
 
         Ok(())
+    }
+
+    fn set_position_if_empty(&mut self, position: Duration) -> bool {
+        if !self.is_empty() {
+            return false;
+        }
+
+        let position = match self.duration() {
+            Some(duration) => position.min(duration),
+            None => position,
+        };
+        let volume = self.volume();
+        let was_paused = self.is_paused();
+
+        if let Some(mixer_device_sink) = self.mixer_device_sink.as_ref() {
+            let new_player = Player::connect_new(mixer_device_sink.mixer());
+            new_player.set_volume(volume);
+
+            if was_paused {
+                new_player.pause();
+            }
+
+            self.player = Some(new_player);
+        }
+
+        self.position_offset = position;
+
+        true
     }
 
     fn seek_with_decode_source<S>(
@@ -507,5 +557,45 @@ impl Nyaa {
         if let Some(player) = self.player.as_ref() {
             player.sleep_until_end();
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/THE UNFORGIVING.mp3");
+
+    #[test]
+    fn seeking_without_a_track_updates_position() {
+        let mut nyaa = Nyaa::new();
+        let position = Duration::from_secs(42);
+
+        nyaa.try_seek(position)
+            .expect("seeking without a track should succeed");
+
+        assert_eq!(nyaa.position(), position);
+    }
+
+    #[test]
+    fn playback_after_seeking_without_a_track_starts_from_that_position() {
+        let mut nyaa = Nyaa::new();
+        let requested_position = Duration::from_secs(42);
+
+        nyaa.try_seek(requested_position)
+            .expect("seeking without a track should succeed");
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+
+        let playback_position = nyaa.position();
+
+        assert!(
+            playback_position >= requested_position,
+            "playback started at {playback_position:?} instead of {requested_position:?}"
+        );
+        assert!(
+            playback_position < requested_position + Duration::from_secs(1),
+            "playback advanced unexpectedly far to {playback_position:?}"
+        );
     }
 }
