@@ -235,6 +235,18 @@ impl eframe::App for App {
                                 );
                             },
                         );
+
+                        let mut speed = self.nyaa.speed();
+                        let response = ui.add(
+                            egui::Slider::new(&mut speed, 0.5..=2.0)
+                                .text("Speed")
+                                .suffix("x")
+                                .logarithmic(true),
+                        );
+
+                        if response.changed() {
+                            self.nyaa.set_speed(speed);
+                        }
                     },
                 );
             });

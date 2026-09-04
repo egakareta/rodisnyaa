@@ -108,12 +108,93 @@ async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
     Ok(Arc::from(bytes))
 }
 
+/// A cloneable handle to an audio output sink shared by one or more [`Nyaa`] players.
+///
+/// Create one output and pass clones to [`Nyaa::new_with_output`] to avoid opening a separate
+/// device sink for every player.
+///
+/// ```no_run
+/// use rodisnyaa::{AudioOutput, Nyaa};
+///
+/// let output = AudioOutput::new();
+/// let first_player = Nyaa::new_with_output(output.clone());
+/// let second_player = Nyaa::new_with_output(output);
+/// ```
+#[derive(Clone)]
+pub struct AudioOutput {
+    mixer_device_sink: Arc<Mutex<Option<MixerDeviceSink>>>,
+}
+
+impl Default for AudioOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioOutput {
+    /// Opens the default audio output when the platform permits it.
+    ///
+    /// Browser targets defer opening the output until playback starts so it can happen in
+    /// response to a user gesture.
+    pub fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mixer_device_sink = Self::open_default_sink();
+        #[cfg(target_arch = "wasm32")]
+        let mixer_device_sink = None;
+
+        Self {
+            mixer_device_sink: Arc::new(Mutex::new(mixer_device_sink)),
+        }
+    }
+
+    /// Creates a shared output from an existing rodio device sink.
+    pub fn from_sink(mixer_device_sink: MixerDeviceSink) -> Self {
+        Self {
+            mixer_device_sink: Arc::new(Mutex::new(Some(mixer_device_sink))),
+        }
+    }
+
+    fn open_default_sink() -> Option<MixerDeviceSink> {
+        match DeviceSinkBuilder::open_default_sink() {
+            Ok(mut sink) => {
+                sink.log_on_drop(false);
+                Some(sink)
+            }
+            Err(_) => None,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn ensure_sink(&self) {
+        let mut mixer_device_sink = self.mixer_device_sink.lock().unwrap();
+
+        if mixer_device_sink.is_none() {
+            *mixer_device_sink = Self::open_default_sink();
+        }
+    }
+
+    fn connect_player(&self) -> Option<Player> {
+        self.mixer_device_sink
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|mixer_device_sink| Player::connect_new(mixer_device_sink.mixer()))
+    }
+
+    /// Controls whether dropping the underlying device sink logs a message.
+    pub fn log_on_drop(&self, log: bool) {
+        if let Some(mixer_device_sink) = self.mixer_device_sink.lock().unwrap().as_mut() {
+            mixer_device_sink.log_on_drop(log);
+        }
+    }
+}
+
 /// rodisnyaa
 ///
 /// Painless audio playback for native and web platforms.
 pub struct Nyaa {
-    /// rodio [`MixerDeviceSink`]
-    mixer_device_sink: Option<MixerDeviceSink>,
+    /// The audio output shared by this player.
+    audio_output: AudioOutput,
 
     /// rodio [`Player`]
     player: Option<Player>,
@@ -134,6 +215,9 @@ pub struct Nyaa {
     /// You should probably use [`Nyaa::position()`] instead.
     position_offset: Duration,
 
+    /// The playback speed applied to the player.
+    speed: f32,
+
     /// Whether the offset is the complete position while no source is actively playing.
     position_is_held: bool,
 
@@ -152,32 +236,23 @@ impl Default for Nyaa {
 }
 
 impl Nyaa {
-    fn open_default_output() -> (Option<MixerDeviceSink>, Option<Player>) {
-        match DeviceSinkBuilder::open_default_sink() {
-            Ok(mut sink) => {
-                let player = Player::connect_new(sink.mixer());
-                sink.log_on_drop(false);
-
-                (Some(sink), Some(player))
-            }
-
-            Err(_) => (None, None),
-        }
+    /// Creates a player with its own default audio output.
+    pub fn new() -> Self {
+        Self::new_with_output(AudioOutput::new())
     }
 
-    pub fn new() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        let (mixer_device_sink, player) = Self::open_default_output();
-        #[cfg(target_arch = "wasm32")]
-        let (mixer_device_sink, player) = (None, None);
+    /// Creates a player connected to a reusable audio output.
+    pub fn new_with_output(audio_output: AudioOutput) -> Self {
+        let player = audio_output.connect_player();
 
         Self {
-            mixer_device_sink,
+            audio_output,
             player,
             duration: Mutex::new(None),
             current_shared_bytes: None,
             current_static_bytes: None,
             position_offset: Duration::ZERO,
+            speed: 1.0,
             position_is_held: true,
             #[cfg(target_arch = "wasm32")]
             pending_playback: None,
@@ -186,18 +261,16 @@ impl Nyaa {
 
     #[cfg(target_arch = "wasm32")]
     fn ensure_audio_output(&mut self) {
-        if self.mixer_device_sink.is_some() {
-            return;
-        }
+        self.audio_output.ensure_sink();
 
-        (self.mixer_device_sink, self.player) = Self::open_default_output();
+        if self.player.is_none() {
+            self.player = self.audio_output.connect_player();
+        }
     }
 
     /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
     pub fn log_on_drop(&mut self, log: bool) {
-        if let Some(mixer_device_sink) = self.mixer_device_sink.as_mut() {
-            mixer_device_sink.log_on_drop(log);
-        }
+        self.audio_output.log_on_drop(log);
     }
 
     fn decoder_from_shared_bytes(
@@ -251,13 +324,13 @@ impl Nyaa {
         #[cfg(target_arch = "wasm32")]
         self.ensure_audio_output();
 
-        let Some(mixer_device_sink) = self.mixer_device_sink.as_ref() else {
+        let Some(new_player) = self.audio_output.connect_player() else {
             return Ok(());
         };
         let volume = self.player.as_ref().map_or(1.0, Player::volume);
-        let new_player = Player::connect_new(mixer_device_sink.mixer());
 
         new_player.set_volume(volume);
+        new_player.set_speed(self.speed);
         new_player.append(source);
         new_player.play();
 
@@ -487,9 +560,9 @@ impl Nyaa {
         let volume = self.volume();
         let was_paused = self.is_paused();
 
-        if let Some(mixer_device_sink) = self.mixer_device_sink.as_ref() {
-            let new_player = Player::connect_new(mixer_device_sink.mixer());
+        if let Some(new_player) = self.audio_output.connect_player() {
             new_player.set_volume(volume);
+            new_player.set_speed(self.speed);
 
             if was_paused {
                 new_player.pause();
@@ -513,9 +586,7 @@ impl Nyaa {
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
     {
-        let (Some(mixer_device_sink), Some(player)) =
-            (self.mixer_device_sink.as_ref(), self.player.as_ref())
-        else {
+        let Some(player) = self.player.as_ref() else {
             return Ok(());
         };
 
@@ -527,9 +598,12 @@ impl Nyaa {
         let was_paused = player.is_paused();
         let volume = player.volume();
 
-        let new_player = Player::connect_new(mixer_device_sink.mixer());
+        let Some(new_player) = self.audio_output.connect_player() else {
+            return Ok(());
+        };
 
         new_player.set_volume(volume);
+        new_player.set_speed(self.speed);
 
         if was_paused {
             new_player.pause();
@@ -695,6 +769,23 @@ impl Nyaa {
         self.player.as_ref().map_or(1.0, Player::volume)
     }
 
+    /// Changes the playback speed and pitch of the sound.
+    ///
+    /// A value of `1.0` uses the original speed. For example, `0.5` plays at half speed and
+    /// `2.0` plays at double speed. Pitch changes by the same factor.
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed;
+
+        if let Some(player) = self.player.as_ref() {
+            player.set_speed(speed);
+        }
+    }
+
+    /// Gets the playback speed of the sound.
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
     /// Gets if a sink is playing
     ///
     /// Equivalent to `!is_paused() && !is_empty()`.
@@ -817,6 +908,27 @@ mod tests {
     }
 
     #[test]
+    fn players_sharing_an_output_keep_independent_state() {
+        let output = AudioOutput::new();
+        let mut first = Nyaa::new_with_output(output.clone());
+        let mut second = Nyaa::new_with_output(output);
+
+        first
+            .load_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be loadable by the first player");
+        second
+            .load_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be loadable by the second player");
+        first
+            .try_seek(Duration::from_secs(42))
+            .expect("the first player should seek independently");
+
+        assert_eq!(first.position(), Duration::from_secs(42));
+        assert_eq!(second.position(), Duration::ZERO);
+        assert_eq!(first.duration(), second.duration());
+    }
+
+    #[test]
     fn stopping_playback_holds_the_reported_position() {
         let mut nyaa = Nyaa::new();
         let start_position = Duration::from_secs(42);
@@ -841,5 +953,16 @@ mod tests {
 
         thread::sleep(Duration::from_millis(50));
         assert_eq!(nyaa.position(), stopped_position);
+    }
+
+    #[test]
+    fn playback_preserves_speed_selected_before_a_track() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.set_speed(1.5);
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+
+        assert_eq!(nyaa.speed(), 1.5);
     }
 }
