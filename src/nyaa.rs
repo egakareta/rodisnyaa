@@ -1089,21 +1089,27 @@ where
     S: Source,
 {
     fn current_span_len(&self) -> Option<usize> {
-        if self.looping.load(Ordering::Relaxed) {
-            return None;
-        }
-
         let remaining_samples = self.remaining.map(|remaining| {
             let samples = remaining.as_nanos() / self.duration_per_sample.as_nanos();
             let channels = u128::from(self.input.channels().get());
             (samples - samples % channels) as usize
         });
 
-        match (self.input.current_span_len(), remaining_samples) {
+        let span = match (self.input.current_span_len(), remaining_samples) {
             (Some(input), Some(remaining)) => Some(input.min(remaining)),
             (Some(input), None) => Some(input),
             (None, remaining) => remaining,
+        };
+
+        // Don't report an infinite span. Downstream sources only re-read
+        // sample rate at span boundaries.
+        if span.is_none() {
+            let channels = usize::from(self.input.channels().get());
+            const FALLBACK_SAMPLES: usize = 512;
+            return Some(FALLBACK_SAMPLES.div_ceil(channels) * channels);
         }
+
+        span
     }
 
     fn channels(&self) -> rodio::ChannelCount {
@@ -2532,6 +2538,33 @@ mod tests {
         assert!(
             advancement >= Duration::from_millis(350),
             "position advanced only {advancement:?} during 250ms of playback at 2x speed"
+        );
+    }
+
+    #[test]
+    fn position_tracks_source_time_when_speed_changes_while_looping() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.set_looping(true);
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+        thread::sleep(Duration::from_millis(200));
+
+        let before_speed_change = nyaa.position();
+        nyaa.set_speed(2.0);
+        let after_speed_change = nyaa.position();
+
+        assert!(
+            after_speed_change.saturating_sub(before_speed_change) < Duration::from_millis(100),
+            "changing speed jumped the position from {before_speed_change:?} to {after_speed_change:?}"
+        );
+
+        thread::sleep(Duration::from_millis(250));
+        let advancement = nyaa.position().saturating_sub(after_speed_change);
+
+        assert!(
+            advancement >= Duration::from_millis(350),
+            "position advanced only {advancement:?} during 250ms of looped playback at 2x speed"
         );
     }
 
