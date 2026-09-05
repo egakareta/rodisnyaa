@@ -5,6 +5,7 @@
 #![doc = include_str!("../README.md")]
 
 mod nyaa;
+pub mod patch;
 mod waveform;
 
 pub use nyaa::*;
