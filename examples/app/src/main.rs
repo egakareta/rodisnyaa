@@ -1001,6 +1001,17 @@ impl eframe::App for App {
                                     self.nyaa.set_volume(volume / 100.0);
                                 }
                             });
+
+                            ui.add_space(8.0);
+
+                            let mut looping = self.nyaa.is_looping();
+                            if ui
+                                .checkbox(&mut looping, "Loop")
+                                .on_hover_text("Repeat playback")
+                                .changed()
+                            {
+                                self.nyaa.set_looping(looping);
+                            }
                         },
                     );
 
