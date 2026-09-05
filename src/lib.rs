@@ -1,4 +1,7 @@
+//! rodisnyaa: Painless audio playback for native and web platforms.
+
 #![allow(rust_analyzer::inactive_code)]
+#![deny(missing_docs)]
 
 mod nyaa;
 mod waveform;

@@ -420,6 +420,8 @@ impl Nyaa {
         Ok(())
     }
 
+    /// Plays bytes stored in an [`Arc`], which allows multiple players to share the same
+    /// audio data without copying it onto the heap.
     pub fn play_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
 
@@ -458,6 +460,7 @@ impl Nyaa {
         Ok(())
     }
 
+    /// Plays an audio asset using its native path.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
         let source = Self::decoder_from_file(path)?;
@@ -731,6 +734,8 @@ impl Nyaa {
         }
     }
 
+    /// Returns the duration of shared bytes, such as data from a `Vec<u8>`, without copying the
+    /// encoded audio onto the heap.
     pub fn duration_from_shared_bytes(
         bytes: impl AsRef<[u8]>,
     ) -> Result<Option<Duration>, NyaaError> {
@@ -744,6 +749,7 @@ impl Nyaa {
         Ok(Self::decoder_from_static_bytes(bytes)?.total_duration())
     }
 
+    /// Returns the duration of an audio file using its native path.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn duration_from_file(path: impl AsRef<Path>) -> Result<Option<Duration>, NyaaError> {
         let file = File::open(path).map_err(NyaaError::File)?;
