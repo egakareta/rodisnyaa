@@ -68,9 +68,36 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static GLOBAL: CountingAllocator = CountingAllocator;
 
-const MY_AUDIO_BYTES: &[u8] = include_bytes!("../../THE UNFORGIVING.mp3");
-const MY_AUDIO_NATIVE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../THE UNFORGIVING.mp3");
-const MY_AUDIO_WASM_URL: &str = "THE UNFORGIVING.mp3";
+#[derive(Clone, Copy)]
+struct Song {
+    title: &'static str,
+    bytes: &'static [u8],
+    native_path: &'static str,
+    wasm_url: &'static str,
+}
+
+const SONGS: [Song; 3] = [
+    Song {
+        title: "ATLAS 270 [WHAT NO]",
+        bytes: include_bytes!("../../ATLAS 270 [WHAT NO].wav"),
+        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../ATLAS 270 [WHAT NO].wav"),
+        wasm_url: "ATLAS 270 [WHAT NO].wav",
+    },
+    Song {
+        title: "polar 240 yay",
+        bytes: include_bytes!("../../polar 240 yay.mp3"),
+        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../polar 240 yay.mp3"),
+        wasm_url: "polar 240 yay.mp3",
+    },
+    Song {
+        title: "THE UNFORGIVING",
+        bytes: include_bytes!("../../THE UNFORGIVING.mp3"),
+        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../THE UNFORGIVING.mp3"),
+        wasm_url: "THE UNFORGIVING.mp3",
+    },
+];
+
+const DEFAULT_SONG_INDEX: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AudioMode {
@@ -116,39 +143,65 @@ struct App {
     waveform: Option<WaveformBuilder>,
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
-    audio_asset: AudioAsset,
+    selected_song: usize,
+    audio_assets: Vec<AudioAsset>,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
         let mut nyaa = Nyaa::new();
+        let song = SONGS[DEFAULT_SONG_INDEX];
 
-        if let Err(error) = nyaa.load_static_bytes(MY_AUDIO_BYTES) {
+        if let Err(error) = nyaa.load_static_bytes(song.bytes) {
             log::error!("could not load audio duration: {error}");
         }
 
-        let waveform = Waveform::builder_from_static_bytes(MY_AUDIO_BYTES)
+        let waveform = Waveform::builder_from_static_bytes(song.bytes)
             .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
             .ok();
+        let audio_assets = SONGS
+            .iter()
+            .map(|song| AudioAsset::new(song.native_path, song.wasm_url))
+            .collect();
 
         Self {
             nyaa,
             waveform,
             waveform_window: WaveformWindow::default(),
             audio_mode: AudioMode::StaticBytes,
-            audio_asset: AudioAsset::new(MY_AUDIO_NATIVE_PATH, MY_AUDIO_WASM_URL),
+            selected_song: DEFAULT_SONG_INDEX,
+            audio_assets,
         }
     }
 
     fn play(&mut self) {
+        let song = SONGS[self.selected_song];
         let result = match self.audio_mode {
-            AudioMode::StaticBytes => self.nyaa.play_static_bytes(MY_AUDIO_BYTES),
-            AudioMode::File => self.nyaa.start_asset_playback(&self.audio_asset),
+            AudioMode::StaticBytes => self.nyaa.play_static_bytes(song.bytes),
+            AudioMode::File => self
+                .nyaa
+                .start_asset_playback(&self.audio_assets[self.selected_song]),
         };
 
         if let Err(error) = result {
             log::error!("could not play audio: {error}");
         }
+    }
+
+    fn select_song(&mut self, selected_song: usize) {
+        let song = SONGS[selected_song];
+
+        self.nyaa.stop();
+        self.selected_song = selected_song;
+        self.waveform_window = WaveformWindow::default();
+
+        if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
+            log::error!("could not load audio duration: {error}");
+        }
+
+        self.waveform = Waveform::builder_from_static_bytes(song.bytes)
+            .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
+            .ok();
     }
 
     fn stop(&mut self) {
@@ -374,6 +427,26 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
+                let mut selected_song = self.selected_song;
+
+                ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Song:");
+                        egui::ComboBox::from_id_salt("song_selector")
+                            .selected_text(SONGS[selected_song].title)
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                for (index, song) in SONGS.iter().enumerate() {
+                                    ui.selectable_value(&mut selected_song, index, song.title);
+                                }
+                            });
+                    });
+                });
+
+                if selected_song != self.selected_song {
+                    self.select_song(selected_song);
+                }
+
                 self.show_waveform(ui);
 
                 let tab_width = 90.0;
@@ -571,10 +644,8 @@ impl eframe::App for App {
                             columns[1].label(format!("Volume: {volume:.0}%"));
                             columns[1].spacing_mut().slider_width = volume_width;
 
-                            let response = columns[1].add(
-                                egui::Slider::new(&mut volume, 0.0..=100.0)
-                                    .show_value(false),
-                            );
+                            let response = columns[1]
+                                .add(egui::Slider::new(&mut volume, 0.0..=100.0).show_value(false));
 
                             if response.changed() {
                                 self.nyaa.set_volume(volume / 100.0);
@@ -662,6 +733,8 @@ mod tests {
 
     #[test]
     fn reports_memory_for_idle_playing_and_stopped_audio() {
+        const MY_AUDIO_BYTES: &[u8] = SONGS[DEFAULT_SONG_INDEX].bytes;
+
         let idle = memory_snapshot();
         let mut nyaa = Nyaa::new();
 
