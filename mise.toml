@@ -27,22 +27,13 @@ run = "oxfmt"
 run = "cargo clippy --all-targets --all-features --workspace -- -D warnings"
 
 [tasks.test]
-depends = ["test:native", "test:wasm", "test:examples:app"]
+depends = ["test:native", "test:wasm"]
 
 [tasks."test:native"]
 run = "cargo test -- --nocapture"
 
 [tasks."test:wasm"]
 run = "wasm-pack test --headless --chrome . -- --nocapture"
-
-[tasks."test:examples:app"]
-depends = ["test:examples:app:native", "test:examples:app:wasm"]
-
-[tasks."test:examples:app:native"]
-run = "cargo test --manifest-path examples/app/Cargo.toml -- --nocapture"
-
-[tasks."test:examples:app:wasm"]
-run = "wasm-pack test --headless --chrome examples/app -- --nocapture"
 
 [tasks."bench:native"]
 run = "cargo bench --bench controls"

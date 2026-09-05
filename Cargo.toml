@@ -26,7 +26,7 @@ thiserror = "2"
 web-time = "1"
 
 [features]
-default = ["mp3", "nightly"]
+default = ["mp3", "nightly", "wav"]
 asio = ["cpal/asio"]
 flac = ["rodio/flac"]
 jack = ["cpal/jack"]
@@ -52,6 +52,8 @@ web-sys = { version = "0.3", features = [
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.8"
+pollster = "0.4"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+web-sys = { version = "0.3", features = ["Blob", "Url"] }

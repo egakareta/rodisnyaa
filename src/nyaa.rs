@@ -513,12 +513,12 @@ impl AudioEffects {
             }
         }
 
-        if let Some(effect) = self.reverb {
-            if !effect.amplitude.is_finite() || effect.amplitude < 0.0 {
-                return Err(NyaaError::InvalidEffect(
-                    "reverb amplitude must be finite and non-negative",
-                ));
-            }
+        if let Some(effect) = self.reverb
+            && (!effect.amplitude.is_finite() || effect.amplitude < 0.0)
+        {
+            return Err(NyaaError::InvalidEffect(
+                "reverb amplitude must be finite and non-negative",
+            ));
         }
 
         if let Some(effect) = self.limiter {
