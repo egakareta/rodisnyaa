@@ -588,6 +588,9 @@ impl AudioEffects {
 /// If you are only playing one audio track at a time, you can use [`Nyaa`] directly.
 /// If you want to play multiple tracks simultaneously, create an [`AudioOutput`] and
 /// pass clones to [`Nyaa::new_with_output`].
+///
+/// Avoid naming a Nyaa instance `player` to prevent confusion with the rodio
+/// [`Player`], instead name it `nyaa` or prefix with `nyaa_`.
 pub struct Nyaa {
     /// The audio output shared by this player.
     audio_output: AudioOutput,
