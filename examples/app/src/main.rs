@@ -712,6 +712,7 @@ mod wasm_tests {
         idle: MemorySnapshot,
         playing: MemorySnapshot,
         stopped: MemorySnapshot,
+        replayed: MemorySnapshot,
     }
 
     fn memory_snapshot() -> MemorySnapshot {
@@ -795,6 +796,22 @@ mod wasm_tests {
         wait_for_audio_settle().await;
         let stopped = memory_snapshot();
 
+        if let Some(asset) = asset.as_ref() {
+            nyaa.play_asset(asset)
+                .await
+                .expect("cached browser audio asset should be replayable");
+        } else {
+            nyaa.play_static_bytes(MY_AUDIO_BYTES)
+                .expect("static audio should be replayable");
+        }
+        wait_for_audio_settle().await;
+        let replayed = memory_snapshot();
+
+        nyaa.stop();
+        if let Some(asset) = asset.as_ref() {
+            asset.clear_browser_cache();
+        }
+
         if let Some(url) = asset_url {
             web_sys::Url::revoke_object_url(&url).expect("audio object URL should be revoked");
         }
@@ -803,6 +820,7 @@ mod wasm_tests {
             idle,
             playing,
             stopped,
+            replayed,
         }
     }
 
@@ -835,6 +853,10 @@ mod wasm_tests {
             .playing
             .peak_bytes
             .saturating_sub(report.idle.peak_bytes);
+        let replay_peak_growth = report
+            .replayed
+            .peak_bytes
+            .saturating_sub(report.playing.peak_bytes);
 
         assert!(
             playing_live_delta >= AUDIO_BYTES_LEN / 2,
@@ -843,6 +865,14 @@ mod wasm_tests {
         assert!(
             playing_peak_delta >= AUDIO_BYTES_LEN / 2,
             "file playback allocated only a {playing_peak_delta}-byte peak delta; it should allocate the fetched encoded asset"
+        );
+        assert!(
+            playing_peak_delta < AUDIO_BYTES_LEN * 3 / 2,
+            "file playback allocated a {playing_peak_delta}-byte peak delta; fetching should allocate the encoded asset only once"
+        );
+        assert!(
+            replay_peak_growth < AUDIO_BYTES_LEN / 2,
+            "replaying the cached asset grew peak memory by {replay_peak_growth} bytes; it should reuse the fetched bytes"
         );
     }
 
@@ -853,6 +883,7 @@ mod wasm_tests {
         print_memory_snapshot("idle", report.idle, report.idle);
         print_memory_snapshot("playing", report.playing, report.idle);
         print_memory_snapshot("stopped", report.stopped, report.idle);
+        print_memory_snapshot("replayed", report.replayed, report.idle);
     }
 
     #[wasm_bindgen_test]

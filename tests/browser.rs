@@ -39,6 +39,12 @@ async fn duration_from_asset_fetches_and_decodes_browser_url() {
         .expect("WAV duration should be available");
 
     assert!(duration > Duration::ZERO);
+
+    let mut nyaa = Nyaa::new();
+    nyaa.start_asset_playback(&asset)
+        .expect("cached browser audio asset should be playable");
+
+    assert!(!nyaa.is_loading());
 }
 
 #[wasm_bindgen_test]

@@ -48,10 +48,22 @@ pub enum NyaaError {
 /// Native targets open [`native_path`](Self::native_path) as a file and stream it through the
 /// decoder. WASM targets fetch [`wasm_url`](Self::wasm_url) from the browser and decode the
 /// response in memory, because browser requests are not exposed as seekable Rust readers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AudioAsset {
     native_path: PathBuf,
     wasm_url: String,
+    #[cfg(target_arch = "wasm32")]
+    browser_bytes: Arc<Mutex<Option<Arc<[u8]>>>>,
+}
+
+impl std::fmt::Debug for AudioAsset {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AudioAsset")
+            .field("native_path", &self.native_path)
+            .field("wasm_url", &self.wasm_url)
+            .finish()
+    }
 }
 
 impl AudioAsset {
@@ -60,6 +72,8 @@ impl AudioAsset {
         Self {
             native_path: native_path.into(),
             wasm_url: wasm_url.into(),
+            #[cfg(target_arch = "wasm32")]
+            browser_bytes: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -71,6 +85,37 @@ impl AudioAsset {
     /// Returns the browser URL.
     pub fn wasm_url(&self) -> &str {
         &self.wasm_url
+    }
+
+    /// Clears bytes cached after loading this asset in a browser.
+    ///
+    /// Clones of this asset share the same cache. Players and waveform builders can retain their
+    /// own references independently, and WebAudio may release a stopped decoder asynchronously.
+    pub fn clear_browser_cache(&self) {
+        #[cfg(target_arch = "wasm32")]
+        self.browser_bytes.lock().unwrap().take();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn cached_browser_bytes(&self) -> Option<Arc<[u8]>> {
+        self.browser_bytes.lock().unwrap().clone()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn load_browser_bytes(&self) -> Result<Arc<[u8]>, NyaaError> {
+        if let Some(bytes) = self.cached_browser_bytes() {
+            return Ok(bytes);
+        }
+
+        let bytes = fetch_browser_asset(self.wasm_url()).await?;
+        let mut browser_bytes = self.browser_bytes.lock().unwrap();
+
+        if let Some(cached_bytes) = browser_bytes.as_ref() {
+            return Ok(cached_bytes.clone());
+        }
+
+        *browser_bytes = Some(bytes.clone());
+        Ok(bytes)
     }
 }
 
@@ -100,9 +145,11 @@ pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
     let buffer = JsFuture::from(response.array_buffer().map_err(browser_asset_error)?)
         .await
         .map_err(browser_asset_error)?;
-    let bytes = Uint8Array::new(&buffer).to_vec();
+    let array = Uint8Array::new(&buffer);
+    let mut bytes = Arc::<[u8]>::new_uninit_slice(array.length() as usize);
+    array.copy_to_uninit(Arc::get_mut(&mut bytes).unwrap());
 
-    Ok(Arc::from(bytes))
+    Ok(unsafe { bytes.assume_init() })
 }
 
 /// A cloneable handle to an audio output sink shared by one or more [`Nyaa`] players.
@@ -412,7 +459,7 @@ impl Nyaa {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = fetch_browser_asset(asset.wasm_url()).await?;
+            let bytes = asset.load_browser_bytes().await?;
             let source = Self::decoder_from_shared_bytes(bytes.clone())?;
 
             self.play_source(source)?;
@@ -440,12 +487,21 @@ impl Nyaa {
 
             self.ensure_audio_output();
 
+            if let Some(bytes) = asset.cached_browser_bytes() {
+                let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+
+                self.play_source(source)?;
+                self.current_shared_bytes = Some(bytes);
+
+                return Ok(());
+            }
+
             let pending_playback = PendingPlayback::default();
             let pending_result = pending_playback.clone();
-            let url = asset.wasm_url().to_owned();
+            let asset = asset.clone();
 
             wasm_bindgen_futures::spawn_local(async move {
-                *pending_result.borrow_mut() = Some(fetch_browser_asset(&url).await);
+                *pending_result.borrow_mut() = Some(asset.load_browser_bytes().await);
             });
 
             self.pending_playback = Some(pending_playback);
@@ -652,7 +708,7 @@ impl Nyaa {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = fetch_browser_asset(asset.wasm_url()).await?;
+            let bytes = asset.load_browser_bytes().await?;
             Ok(Self::decoder_from_shared_bytes(bytes)?.total_duration())
         }
     }
@@ -770,6 +826,8 @@ impl Nyaa {
             player.stop();
         }
 
+        self.current_shared_bytes = None;
+        self.current_static_bytes = None;
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;

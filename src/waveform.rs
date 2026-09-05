@@ -1,5 +1,3 @@
-#[cfg(target_arch = "wasm32")]
-use crate::fetch_browser_asset;
 use crate::{AudioAsset, Nyaa, NyaaError};
 #[cfg(not(target_arch = "wasm32"))]
 use rodio::Decoder;
@@ -219,7 +217,7 @@ impl Waveform {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = fetch_browser_asset(asset.wasm_url()).await?;
+            let bytes = asset.load_browser_bytes().await?;
             Ok(Self::from_source(Nyaa::decoder_from_shared_bytes(bytes)?))
         }
     }
@@ -233,7 +231,7 @@ impl Waveform {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = fetch_browser_asset(asset.wasm_url()).await?;
+            let bytes = asset.load_browser_bytes().await?;
             Ok(Self::builder_from_source(Nyaa::decoder_from_shared_bytes(
                 bytes,
             )?))
