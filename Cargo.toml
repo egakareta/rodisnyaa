@@ -9,6 +9,10 @@ license = "MIT OR Apache-2.0"
 name = "rodisnyaa"
 path = "src/lib.rs"
 
+[[bench]]
+name = "controls"
+harness = false
+
 [dependencies]
 dasp_sample = "0.11"
 rodio = { version = "0.22", features = [
@@ -42,7 +46,8 @@ web-sys = { version = "0.3", features = [
     "console",
 ] }
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.8"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
