@@ -240,17 +240,12 @@
                             ctx && ctx.sampleRate
                                 ? " · " + ctx.sampleRate + "Hz"
                                 : "";
-                        var src =
-                            status.bufferSources > 0
-                                ? " · " + status.bufferSources + " src"
-                                : " · no src yet";
                         var label =
                             (running > 0 ? "running" : "suspended") +
                             " · " +
                             status.audioContexts.length +
                             " ctx" +
-                            rate +
-                            src;
+                            rate;
                         setPill(
                             "webaudio-dot",
                             "webaudio-text",
