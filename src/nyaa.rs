@@ -220,6 +220,9 @@ pub struct Nyaa {
     /// The playback speed applied to the player.
     speed: f32,
 
+    /// The volume applied to the player.
+    volume: Mutex<f32>,
+
     /// Whether the offset is the complete position while no source is actively playing.
     position_is_held: bool,
 
@@ -256,6 +259,7 @@ impl Nyaa {
             position_offset: Duration::ZERO,
             player_position_anchor: Duration::ZERO,
             speed: 1.0,
+            volume: Mutex::new(1.0),
             position_is_held: true,
             #[cfg(target_arch = "wasm32")]
             pending_playback: None,
@@ -333,7 +337,7 @@ impl Nyaa {
         let Some(new_player) = self.audio_output.connect_player() else {
             return Ok(());
         };
-        let volume = self.player.as_ref().map_or(1.0, Player::volume);
+        let volume = self.volume();
 
         new_player.set_volume(volume);
         new_player.set_speed(self.speed);
@@ -606,7 +610,7 @@ impl Nyaa {
         source.try_seek(position).map_err(NyaaError::Seek)?;
 
         let was_paused = player.is_paused();
-        let volume = player.volume();
+        let volume = self.volume();
 
         let Some(new_player) = self.audio_output.connect_player() else {
             return Ok(());
@@ -776,6 +780,8 @@ impl Nyaa {
     /// The value `1.0` is the "normal" volume (unfiltered input). Any value other than `1.0` will
     /// multiply each sample by this value.
     pub fn set_volume(&self, volume: f32) {
+        *self.volume.lock().unwrap() = volume;
+
         if let Some(player) = self.player.as_ref() {
             player.set_volume(volume);
         }
@@ -786,7 +792,7 @@ impl Nyaa {
     /// The value `1.0` is the "normal" volume (unfiltered input). Any value other than 1.0 will
     /// multiply each sample by this value.
     pub fn volume(&self) -> f32 {
-        self.player.as_ref().map_or(1.0, Player::volume)
+        *self.volume.lock().unwrap()
     }
 
     /// Changes the playback speed and pitch of the sound.
@@ -1025,6 +1031,19 @@ mod tests {
             .expect("embedded audio should be playable");
 
         assert_eq!(nyaa.speed(), 1.5);
+    }
+
+    #[test]
+    fn playback_preserves_volume_selected_before_a_track() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.set_volume(0.35);
+        assert_eq!(nyaa.volume(), 0.35);
+
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+
+        assert_eq!(nyaa.volume(), 0.35);
     }
 
     #[test]
