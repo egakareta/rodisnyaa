@@ -162,6 +162,8 @@ impl Waveform {
     }
 
     /// Decodes shared bytes into a waveform.
+    ///
+    /// Prefer [`Self::builder_from_shared_bytes`] for long tracks to avoid blocking.
     pub fn from_shared_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
         Ok(Self::from_source(Nyaa::decoder_from_shared_bytes(bytes)?))
@@ -178,6 +180,8 @@ impl Waveform {
     }
 
     /// Decodes static bytes into a waveform without copying the encoded audio onto the heap.
+    ///
+    /// Prefer [`Self::builder_from_static_bytes`] for long tracks to avoid blocking.
     pub fn from_static_bytes(bytes: &'static [u8]) -> Result<Self, NyaaError> {
         Ok(Self::from_source(Nyaa::decoder_from_static_bytes(bytes)?))
     }
@@ -191,6 +195,8 @@ impl Waveform {
     }
 
     /// Decodes a file into a waveform.
+    ///
+    /// Prefer [`Self::builder_from_file`] for long tracks to avoid blocking.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, NyaaError> {
         use crate::NyaaError;
@@ -209,6 +215,8 @@ impl Waveform {
     }
 
     /// Decodes an audio asset into a waveform using its native path or browser URL.
+    ///
+    /// Prefer [`Self::builder_from_asset`] for long tracks to avoid blocking.
     pub async fn from_asset(asset: &AudioAsset) -> Result<Self, NyaaError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
