@@ -2,8 +2,20 @@
 name = "rodisnyaa"
 version = "0.1.0"
 edition = "2024"
-description = "nya"
+description = "Painless audio playback and waveform generation for native and web platforms"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/egakareta/rodisnyaa"
+documentation = "https://docs.rs/rodisnyaa"
+readme = "README.md"
+keywords = ["audio", "playback", "rodio", "wasm", "waveform"]
+categories = ["multimedia::audio", "wasm"]
+include = [
+    "/src/**",
+    "/CHANGELOG.md",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+    "/README.md",
+]
 
 [lib]
 name = "rodisnyaa"

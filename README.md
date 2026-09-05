@@ -4,6 +4,12 @@ Painless audio playback for native and web platforms.
 
 A small Rust audio player built on top of [rodio](https://github.com/RustAudio/rodio) and [CPAL](https://github.com/RustAudio/cpal).
 
+## Installation
+
+```sh
+cargo add rodisnyaa
+```
+
 ## Usage
 
 ```rust,no_run
@@ -19,15 +25,17 @@ fn main() -> Result<(), NyaaError> {
     nyaa.play_file("audio.mp3")?;
     nyaa.wait_until_end();
 
-    // Play some embedded bytes
-    let audio: &'static [u8] = include_bytes!("../examples/polar 240 yay.mp3");
-    nyaa.play_static_bytes(audio)?;
-
     // Make it 25% faster
     nyaa.set_speed(1.25);
 
     // Seek to 30 seconds
     nyaa.try_seek_secs(30.0)?;
+    Ok(())
+}
+
+fn play_embedded_audio(audio: &'static [u8]) -> Result<(), NyaaError> {
+    let mut nyaa = Nyaa::new();
+    nyaa.play_static_bytes(audio)?;
     Ok(())
 }
 
@@ -41,8 +49,8 @@ fn where_is_my_audio_at(nyaa: &mut Nyaa) -> Result<(), NyaaError> {
 fn play_my_audio_cross_platform() -> Result<(), NyaaError> {
     // Use file path "assets/music.mp3" on native, resource "audio.mp3" on web
     let asset = AudioAsset::new("assets/music.mp3", "audio.mp3");
-    let mut player = Nyaa::new();
-    player.start_asset_playback(&asset)?;
+    let mut nyaa = Nyaa::new();
+    nyaa.start_asset_playback(&asset)?;
     Ok(())
 }
 ```
