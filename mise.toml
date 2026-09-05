@@ -52,3 +52,7 @@ run = "wasm-pack test --release --headless --chrome . --test browser_benches -- 
 [tasks."serve:examples:app"]
 dir = "{{config_root}}/examples/app"
 run = "trunk serve"
+
+[bootstrap.packages]
+"apt:pkg-config" = "latest"
+"apt:libjack-jackd2-dev" = "latest"

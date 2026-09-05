@@ -2,7 +2,8 @@ use web_time::Duration;
 
 use eframe::egui;
 use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, AudioAsset, Nyaa, Waveform, WaveformBuilder,
+    format_timestamp_secs, parse_timestamp, AudioAsset, AudioBackend, AudioOutput, Nyaa, Waveform,
+    WaveformBuilder,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -143,6 +144,7 @@ struct App {
     waveform: Option<WaveformBuilder>,
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
+    audio_backends: Vec<AudioBackend>,
     selected_song: usize,
     audio_assets: Vec<AudioAsset>,
 }
@@ -169,6 +171,7 @@ impl App {
             waveform,
             waveform_window: WaveformWindow::default(),
             audio_mode: AudioMode::StaticBytes,
+            audio_backends: AudioOutput::available_backends(),
             selected_song: DEFAULT_SONG_INDEX,
             audio_assets,
         }
@@ -202,6 +205,19 @@ impl App {
         self.waveform = Waveform::builder_from_static_bytes(song.bytes)
             .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
             .ok();
+    }
+
+    fn select_audio_backend(&mut self, audio_backend: AudioBackend) {
+        if let Err(error) = self.nyaa.switch_audio_backend(audio_backend) {
+            log::error!("could not switch audio backend: {error}");
+            return;
+        }
+
+        let song = SONGS[self.selected_song];
+
+        if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
+            log::error!("could not reload audio after switching backends: {error}");
+        }
     }
 
     fn stop(&mut self) {
@@ -428,6 +444,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 let mut selected_song = self.selected_song;
+                let mut selected_audio_backend = self.nyaa.audio_backend();
 
                 ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
                     ui.horizontal(|ui| {
@@ -441,10 +458,36 @@ impl eframe::App for App {
                                 }
                             });
                     });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Audio backend:");
+                        egui::ComboBox::from_id_salt("audio_backend_selector")
+                            .selected_text(
+                                selected_audio_backend
+                                    .map(|backend| backend.name())
+                                    .unwrap_or("Custom output"),
+                            )
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                for &backend in &self.audio_backends {
+                                    ui.selectable_value(
+                                        &mut selected_audio_backend,
+                                        Some(backend),
+                                        backend.name(),
+                                    );
+                                }
+                            });
+                    });
                 });
 
                 if selected_song != self.selected_song {
                     self.select_song(selected_song);
+                }
+
+                if selected_audio_backend != self.nyaa.audio_backend() {
+                    if let Some(audio_backend) = selected_audio_backend {
+                        self.select_audio_backend(audio_backend);
+                    }
                 }
 
                 self.show_waveform(ui);

@@ -1,6 +1,7 @@
 use dasp_sample::FromSample;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
+use rodio::cpal::traits::HostTrait;
 use rodio::decoder::DecoderError;
 use rodio::source::SeekError;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
@@ -8,7 +9,9 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
-use std::io::{BufReader, Cursor, Error};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::BufReader;
+use std::io::{Cursor, Error};
 use std::path::{Path, PathBuf};
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
@@ -41,6 +44,37 @@ pub enum NyaaError {
     #[cfg(target_arch = "wasm32")]
     #[error("failed to load browser audio asset: {0}")]
     BrowserAsset(String),
+}
+
+/// A CPAL audio host that can provide an output device.
+pub type AudioBackend = rodio::cpal::HostId;
+
+/// An error that can occur while opening an audio backend.
+#[derive(Debug, Error)]
+pub enum AudioOutputError {
+    /// The requested backend is not available on this system.
+    #[error("audio backend {backend} is unavailable: {source}")]
+    BackendUnavailable {
+        /// The backend that was requested.
+        backend: AudioBackend,
+        /// The error returned by CPAL while initializing the backend.
+        #[source]
+        source: rodio::cpal::HostUnavailable,
+    },
+
+    /// The requested backend has no output device.
+    #[error("audio backend {0} has no output device")]
+    NoOutputDevice(AudioBackend),
+
+    /// The requested backend's output stream could not be opened.
+    #[error("failed to open audio backend {backend}: {source}")]
+    OpenStream {
+        /// The backend that was requested.
+        backend: AudioBackend,
+        /// The error returned by rodio while opening the output stream.
+        #[source]
+        source: rodio::stream::DeviceSinkError,
+    },
 }
 
 /// An audio file with locations for native and browser targets.
@@ -168,6 +202,7 @@ pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
 #[derive(Clone)]
 pub struct AudioOutput {
     mixer_device_sink: Arc<Mutex<Option<MixerDeviceSink>>>,
+    backend: Option<AudioBackend>,
 }
 
 impl Default for AudioOutput {
@@ -182,6 +217,7 @@ impl AudioOutput {
     /// Browser targets defer opening the output until playback starts so it can happen in
     /// response to a user gesture.
     pub fn new() -> Self {
+        let backend = Some(rodio::cpal::default_host().id());
         #[cfg(not(target_arch = "wasm32"))]
         let mixer_device_sink = Self::open_default_sink();
         #[cfg(target_arch = "wasm32")]
@@ -189,13 +225,46 @@ impl AudioOutput {
 
         Self {
             mixer_device_sink: Arc::new(Mutex::new(mixer_device_sink)),
+            backend,
         }
+    }
+
+    /// Returns the audio backends currently available on this system.
+    pub fn available_backends() -> Vec<AudioBackend> {
+        rodio::cpal::available_hosts()
+    }
+
+    /// Opens the default output device provided by a specific audio backend.
+    ///
+    /// Browser targets defer opening the output until playback starts so it can happen in
+    /// response to a user gesture.
+    pub fn try_new_with_backend(backend: AudioBackend) -> Result<Self, AudioOutputError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mixer_device_sink = Some(Self::open_backend_sink(backend)?);
+
+        #[cfg(target_arch = "wasm32")]
+        let mixer_device_sink = {
+            rodio::cpal::host_from_id(backend)
+                .map_err(|source| AudioOutputError::BackendUnavailable { backend, source })?;
+            None
+        };
+
+        Ok(Self {
+            mixer_device_sink: Arc::new(Mutex::new(mixer_device_sink)),
+            backend: Some(backend),
+        })
+    }
+
+    /// Returns the selected audio backend, or `None` for an output created from a sink.
+    pub fn backend(&self) -> Option<AudioBackend> {
+        self.backend
     }
 
     /// Creates a shared output from an existing rodio device sink.
     pub fn from_sink(mixer_device_sink: MixerDeviceSink) -> Self {
         Self {
             mixer_device_sink: Arc::new(Mutex::new(Some(mixer_device_sink))),
+            backend: None,
         }
     }
 
@@ -209,12 +278,30 @@ impl AudioOutput {
         }
     }
 
+    fn open_backend_sink(backend: AudioBackend) -> Result<MixerDeviceSink, AudioOutputError> {
+        let host = rodio::cpal::host_from_id(backend)
+            .map_err(|source| AudioOutputError::BackendUnavailable { backend, source })?;
+        let device = host
+            .default_output_device()
+            .or_else(|| host.output_devices().ok()?.next())
+            .ok_or(AudioOutputError::NoOutputDevice(backend))?;
+        let mut sink = DeviceSinkBuilder::from_device(device)
+            .and_then(|builder| builder.open_sink_or_fallback())
+            .map_err(|source| AudioOutputError::OpenStream { backend, source })?;
+
+        sink.log_on_drop(false);
+        Ok(sink)
+    }
+
     #[cfg(target_arch = "wasm32")]
     fn ensure_sink(&self) {
         let mut mixer_device_sink = self.mixer_device_sink.lock().unwrap();
 
         if mixer_device_sink.is_none() {
-            *mixer_device_sink = Self::open_default_sink();
+            *mixer_device_sink = match self.backend {
+                Some(backend) => Self::open_backend_sink(backend).ok(),
+                None => Self::open_default_sink(),
+            };
         }
     }
 
@@ -312,6 +399,32 @@ impl Nyaa {
             #[cfg(target_arch = "wasm32")]
             pending_playback: None,
         }
+    }
+
+    /// Returns the audio backend selected for this player.
+    ///
+    /// Returns `None` when the player uses an [`AudioOutput`] created with
+    /// [`AudioOutput::from_sink`].
+    pub fn audio_backend(&self) -> Option<AudioBackend> {
+        self.audio_output.backend()
+    }
+
+    /// Switches this player to a specific audio backend.
+    ///
+    /// A successful switch stops the current source and holds its last reported position.
+    /// Other players that shared the previous [`AudioOutput`] are not affected.
+    pub fn switch_audio_backend(&mut self, backend: AudioBackend) -> Result<(), AudioOutputError> {
+        if self.audio_backend() == Some(backend) {
+            return Ok(());
+        }
+
+        let audio_output = AudioOutput::try_new_with_backend(backend)?;
+
+        self.stop();
+        self.audio_output = audio_output;
+        self.player = self.audio_output.connect_player();
+
+        Ok(())
     }
 
     #[cfg(target_arch = "wasm32")]

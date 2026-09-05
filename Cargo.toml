@@ -14,6 +14,7 @@ name = "controls"
 harness = false
 
 [dependencies]
+cpal = "0.17"
 dasp_sample = "0.11"
 rodio = { version = "0.22", default-features = false, features = [
     "playback",
@@ -26,7 +27,9 @@ web-time = "1"
 
 [features]
 default = ["mp3", "nightly"]
+asio = ["cpal/asio"]
 flac = ["rodio/flac"]
+jack = ["cpal/jack"]
 mp3 = ["rodio/mp3"]
 mp4 = ["rodio/mp4"]
 nightly = ["cpal/audioworklet", "parking_lot_core/nightly"]
