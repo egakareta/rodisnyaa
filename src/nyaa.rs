@@ -7,7 +7,7 @@ use rodio::source::{AutomaticGainControlSettings, LimitSettings, SeekError};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
@@ -144,7 +144,7 @@ pub struct AudioDevice {
 
 impl std::fmt::Display for AudioDevice {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} ({})", self.description, self.backend.name())?;
+        write!(formatter, "{}", self.description)?;
 
         if self.is_default {
             write!(formatter, " [default]")?;
@@ -472,12 +472,34 @@ impl AudioOutput {
     /// returns the fresh list.
     pub fn refresh_available_output_devices() -> Vec<AudioDevice> {
         let backends = rodio::cpal::available_hosts();
-        let devices: Vec<AudioDevice> = backends
+        let default_backend = rodio::cpal::default_host().id();
+        let mut devices: Vec<AudioDevice> = backends
             .iter()
             .flat_map(|backend| {
                 Self::available_output_devices_for_backend(*backend).unwrap_or_default()
             })
             .collect();
+
+        devices.sort_by(|first, second| {
+            second
+                .is_default
+                .cmp(&first.is_default)
+                .then_with(|| {
+                    (second.backend == default_backend).cmp(&(first.backend == default_backend))
+                })
+                .then_with(|| first.name().cmp(second.name()))
+                .then_with(|| first.backend.name().cmp(second.backend.name()))
+        });
+
+        let mut seen = HashSet::new();
+        devices.retain(|device| seen.insert(device.name().to_string()));
+
+        devices.sort_by(|first, second| {
+            second
+                .is_default
+                .cmp(&first.is_default)
+                .then_with(|| first.name().cmp(second.name()))
+        });
 
         *CACHED_AUDIO_BACKENDS
             .get_or_init(|| Mutex::new(None))
@@ -2518,10 +2540,16 @@ mod tests {
         let backends = AudioOutput::available_backends();
         let devices = AudioOutput::available_output_devices();
 
+        let mut seen_names = std::collections::HashSet::new();
         for device in &devices {
             assert!(
                 !device.name().is_empty(),
                 "enumerated device has an empty name"
+            );
+            assert!(
+                seen_names.insert(device.name().to_string()),
+                "combined device list contains duplicate name {:?}",
+                device.name()
             );
             assert!(
                 backends.contains(&device.backend()),
