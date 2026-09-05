@@ -65,6 +65,17 @@ Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/
 | `jack`              | JACK backend         |
 | `nightly` (default) | AudioWorklet backend |
 
+## Motivation
+
+[rodio](https://github.com/rustaudio/rodio) and [CPAL](https://github.com/RustAudio/cpal) are both great libraries, but they are not very ergonomic to use. Here are some issues that I have encountered while using them:
+
+1. There is no Null backend, so you must forever live with `Option<MixerDeviceSink>`.
+2. `rodio::Player::try_seek` deadlocks on WASM.
+3. rodio seems to prioritize correctness, which is fine, but you end up needing to wrap a lot of code yourself to get predictable behavior e.g. setting time position or playback speed when no audio is playing.
+4. rodio does not officially support AudioWorklet while CPAL does.
+5. No convenience code in rodio for native and web audio resource handling, causing a ton of `#[cfg(target_arch = "wasm32")]`.
+6. No waveform visualization.
+
 ## Development
 
 This repository uses [mise](https://mise.jdx.dev/).
