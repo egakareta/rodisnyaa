@@ -680,6 +680,9 @@ impl AudioOutput {
     }
 
     fn retry_sink(&self) -> Result<(), AudioOutputError> {
+        #[cfg(all(target_arch = "wasm32", feature = "nightly"))]
+        crate::patch::ensure_audioworklet_text_polyfill();
+
         let mut mixer_device_sink = self.mixer_device_sink.lock().unwrap();
 
         if mixer_device_sink.is_none() {
