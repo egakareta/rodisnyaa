@@ -722,6 +722,21 @@ impl eframe::App for App {
                                         ui.selectable_value(&mut selected_song, index, song.title);
                                     }
                                 });
+
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                if ui
+                                    .add(egui::Button::new("Clear cache"))
+                                    .on_hover_text(
+                                        "Forget downloaded audio so files are fetched again",
+                                    )
+                                    .clicked()
+                                {
+                                    for asset in &self.audio_assets {
+                                        asset.clear_browser_cache();
+                                    }
+                                }
+                            }
                         });
 
                         ui.horizontal(|ui| {
