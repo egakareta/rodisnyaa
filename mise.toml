@@ -1,6 +1,6 @@
 [tools]
-oxfmt = { version = "latest", backend = "github:oxc-project/oxc", matching = "oxfmt" }
 lefthook = "latest"
+oxfmt = "latest"
 rust = { version = "nightly-2026-03-12", components = [
     "clippy",
     "rustfmt",
