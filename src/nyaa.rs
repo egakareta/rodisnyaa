@@ -1,20 +1,23 @@
 use dasp_sample::FromSample;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
-use rodio::cpal::traits::HostTrait;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::decoder::DecoderError;
 use rodio::source::{AutomaticGainControlSettings, LimitSettings, SeekError};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
+use std::collections::VecDeque;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::BufReader;
 use std::io::{Cursor, Error};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
@@ -44,6 +47,18 @@ pub enum NyaaError {
     #[error("invalid audio effect setting: {0}")]
     InvalidEffect(&'static str),
 
+    /// The audio output could not be initialized.
+    #[error(transparent)]
+    AudioOutput(#[from] AudioOutputError),
+
+    /// The playback range is empty or starts beyond the end of the source.
+    #[error("the playback range must contain audio")]
+    InvalidPlaybackRange,
+
+    /// A playback operation required a previously loaded or played source.
+    #[error("no audio source is available")]
+    NoAudioSource,
+
     /// Errors that might occur when loading an audio asset in a browser.
     #[cfg(target_arch = "wasm32")]
     #[error("failed to load browser audio asset: {0}")]
@@ -53,7 +68,7 @@ pub enum NyaaError {
 /// A CPAL audio host that can provide an output device.
 pub type AudioBackend = rodio::cpal::HostId;
 
-/// An error that can occur while opening an audio backend.
+/// An error that can occur while opening an audio backend or device.
 #[derive(Debug, Error)]
 pub enum AudioOutputError {
     /// The requested backend is not available on this system.
@@ -70,6 +85,25 @@ pub enum AudioOutputError {
     #[error("audio backend {0} has no output device")]
     NoOutputDevice(AudioBackend),
 
+    /// The output devices of the requested backend could not be listed.
+    #[error("failed to list output devices of audio backend {backend}: {source}")]
+    ListDevices {
+        /// The backend whose devices could not be listed.
+        backend: AudioBackend,
+        /// The error returned by CPAL while listing devices.
+        #[source]
+        source: rodio::cpal::DevicesError,
+    },
+
+    /// The requested output device could not be found.
+    ///
+    /// The device may have been unplugged or disabled after enumeration.
+    #[error("audio output device \"{device}\" was not found")]
+    DeviceNotFound {
+        /// The device that could not be found.
+        device: Box<AudioDevice>,
+    },
+
     /// The requested backend's output stream could not be opened.
     #[error("failed to open audio backend {backend}: {source}")]
     OpenStream {
@@ -78,6 +112,143 @@ pub enum AudioOutputError {
         /// The error returned by rodio while opening the output stream.
         #[source]
         source: rodio::stream::DeviceSinkError,
+    },
+
+    /// The requested output device's stream could not be opened.
+    #[error("failed to open audio output device \"{device}\": {source}")]
+    OpenDeviceStream {
+        /// The device that was requested.
+        device: Box<AudioDevice>,
+        /// The error returned by rodio while opening the output stream.
+        #[source]
+        source: rodio::stream::DeviceSinkError,
+    },
+}
+
+/// An individual output device such as speakers, headphones, or a virtual device.
+///
+/// Values are obtained from [`AudioOutput::available_output_devices`] or
+/// [`AudioOutput::available_output_devices_for_backend`] and can be passed to
+/// [`AudioOutput::try_new_with_device`] or [`Nyaa::switch_audio_device`].
+///
+/// Devices are identified by their CPAL device id when the platform provides one and fall back
+/// to name matching otherwise. A device obtained from enumeration may no longer exist when it is
+/// opened, in which case opening returns [`AudioOutputError::DeviceNotFound`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioDevice {
+    backend: AudioBackend,
+    id: Option<rodio::cpal::DeviceId>,
+    description: rodio::cpal::DeviceDescription,
+    is_default: bool,
+}
+
+impl std::fmt::Display for AudioDevice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} ({})", self.description, self.backend.name())?;
+
+        if self.is_default {
+            write!(formatter, " [default]")?;
+        }
+
+        Ok(())
+    }
+}
+
+impl AudioDevice {
+    /// Returns the backend that provides this device.
+    pub fn backend(&self) -> AudioBackend {
+        self.backend
+    }
+
+    /// Returns the stable device id when the platform provides one.
+    pub fn id(&self) -> Option<&rodio::cpal::DeviceId> {
+        self.id.as_ref()
+    }
+
+    /// Returns the structured CPAL description of this device.
+    ///
+    /// The description exposes the human-readable name plus manufacturer, device type
+    /// (speaker, headphones, headset, virtual, ...), and interface type where the platform
+    /// reports them.
+    pub fn description(&self) -> &rodio::cpal::DeviceDescription {
+        &self.description
+    }
+
+    /// Returns the human-readable device name.
+    pub fn name(&self) -> &str {
+        self.description.name()
+    }
+
+    /// Returns whether this device is the default output device of its backend.
+    pub fn is_default(&self) -> bool {
+        self.is_default
+    }
+
+    /// Returns the device type categorization (speaker, headphones, virtual, ...).
+    pub fn device_type(&self) -> rodio::cpal::DeviceType {
+        self.description.device_type()
+    }
+
+    /// Returns the interface/connection type (built-in, USB, Bluetooth, virtual, ...).
+    pub fn interface_type(&self) -> rodio::cpal::InterfaceType {
+        self.description.interface_type()
+    }
+
+    fn from_cpal_device(
+        backend: AudioBackend,
+        device: &rodio::cpal::Device,
+        is_default: bool,
+    ) -> Option<Self> {
+        let description = device.description().ok()?;
+        let id = device.id().ok();
+
+        Some(Self {
+            backend,
+            id,
+            description,
+            is_default,
+        })
+    }
+
+    fn matches_cpal_device(&self, device: &rodio::cpal::Device) -> bool {
+        if let (Some(wanted), Ok(actual)) = (self.id.as_ref(), device.id())
+            && wanted == &actual
+        {
+            return true;
+        }
+
+        device
+            .description()
+            .is_ok_and(|description| description.name() == self.name())
+    }
+}
+
+/// The current playback lifecycle state of a [`Nyaa`] player.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaybackState {
+    /// No source is currently playing or loading.
+    Idle,
+    /// An audio asset is being loaded asynchronously.
+    Loading,
+    /// A source is actively playing.
+    Playing,
+    /// The current source is paused.
+    Paused,
+    /// The current source reached the end of playback.
+    Ended,
+    /// The most recent loading or playback operation failed.
+    Failed,
+}
+
+/// A playback lifecycle event emitted by [`Nyaa::poll_event`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaybackEvent {
+    /// The player moved from one lifecycle state to another.
+    StateChanged {
+        /// The state before the transition.
+        previous: PlaybackState,
+        /// The state after the transition.
+        current: PlaybackState,
     },
 }
 
@@ -207,6 +378,7 @@ pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
 pub struct AudioOutput {
     mixer_device_sink: Arc<Mutex<Option<MixerDeviceSink>>>,
     backend: Option<AudioBackend>,
+    device: Option<AudioDevice>,
 }
 
 impl Default for AudioOutput {
@@ -222,6 +394,7 @@ impl AudioOutput {
     /// response to a user gesture.
     pub fn new() -> Self {
         let backend = Some(rodio::cpal::default_host().id());
+        let device = backend.and_then(Self::default_device_for_backend);
         #[cfg(not(target_arch = "wasm32"))]
         let mixer_device_sink = Self::open_default_sink();
         #[cfg(target_arch = "wasm32")]
@@ -230,12 +403,97 @@ impl AudioOutput {
         Self {
             mixer_device_sink: Arc::new(Mutex::new(mixer_device_sink)),
             backend,
+            device,
         }
     }
 
     /// Returns the audio backends currently available on this system.
     pub fn available_backends() -> Vec<AudioBackend> {
         rodio::cpal::available_hosts()
+    }
+
+    /// Returns the output devices currently available across all audio backends.
+    ///
+    /// Each entry describes an individual speaker, headphone, headset, or virtual device and
+    /// records whether it is the default device of its backend. Backends that fail to list
+    /// devices are skipped.
+    pub fn available_output_devices() -> Vec<AudioDevice> {
+        Self::available_backends()
+            .into_iter()
+            .flat_map(|backend| {
+                Self::available_output_devices_for_backend(backend).unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// Returns the output devices currently available from a specific audio backend.
+    pub fn available_output_devices_for_backend(
+        backend: AudioBackend,
+    ) -> Result<Vec<AudioDevice>, AudioOutputError> {
+        let host = rodio::cpal::host_from_id(backend)
+            .map_err(|source| AudioOutputError::BackendUnavailable { backend, source })?;
+        let default_device = host.default_output_device();
+        let default_id = default_device.as_ref().and_then(|device| device.id().ok());
+        let default_name = default_device
+            .as_ref()
+            .and_then(|device| device.description().ok())
+            .map(|description| description.name().to_string());
+        let mut devices: Vec<AudioDevice> = host
+            .output_devices()
+            .map_err(|source| AudioOutputError::ListDevices { backend, source })?
+            .filter_map(|device| {
+                let is_default = match (&default_id, device.id().ok()) {
+                    (Some(default_id), Some(id)) => &id == default_id,
+                    _ => device.description().is_ok_and(|description| {
+                        default_name.as_deref() == Some(description.name())
+                    }),
+                };
+
+                AudioDevice::from_cpal_device(backend, &device, is_default)
+            })
+            .collect();
+
+        if let Some(default_device) = default_device
+            && !devices.iter().any(|device| device.is_default)
+            && let Some(default) = AudioDevice::from_cpal_device(backend, &default_device, true)
+        {
+            devices.push(default);
+        }
+
+        devices.sort_by(|first, second| {
+            second
+                .is_default
+                .cmp(&first.is_default)
+                .then_with(|| first.name().cmp(second.name()))
+        });
+
+        Ok(devices)
+    }
+
+    /// Opens a specific output device such as a speaker, headphone, or virtual device.
+    ///
+    /// Browser targets defer opening the output until playback starts so it can happen in
+    /// response to a user gesture.
+    pub fn try_new_with_device(device: &AudioDevice) -> Result<Self, AudioOutputError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mixer_device_sink = Some(Self::open_device_sink(device)?);
+
+        #[cfg(target_arch = "wasm32")]
+        let mixer_device_sink = {
+            rodio::cpal::host_from_id(device.backend).map_err(|source| {
+                AudioOutputError::BackendUnavailable {
+                    backend: device.backend,
+                    source,
+                }
+            })?;
+            None
+        };
+
+        Ok(Self {
+            mixer_device_sink: Arc::new(Mutex::new(mixer_device_sink)),
+            backend: Some(device.backend),
+            device: Some(device.clone()),
+        })
     }
 
     /// Opens the default output device provided by a specific audio backend.
@@ -256,6 +514,7 @@ impl AudioOutput {
         Ok(Self {
             mixer_device_sink: Arc::new(Mutex::new(mixer_device_sink)),
             backend: Some(backend),
+            device: Self::default_device_for_backend(backend),
         })
     }
 
@@ -264,14 +523,24 @@ impl AudioOutput {
         self.backend
     }
 
+    /// Returns the selected output device, if one was chosen or resolved.
+    ///
+    /// Returns `None` for an output created with [`AudioOutput::from_sink`] or when the
+    /// platform did not report a device description.
+    pub fn device(&self) -> Option<AudioDevice> {
+        self.device.clone()
+    }
+
     /// Creates a shared output from an existing rodio device sink.
     pub fn from_sink(mixer_device_sink: MixerDeviceSink) -> Self {
         Self {
             mixer_device_sink: Arc::new(Mutex::new(Some(mixer_device_sink))),
             backend: None,
+            device: None,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn open_default_sink() -> Option<MixerDeviceSink> {
         match DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
@@ -297,16 +566,69 @@ impl AudioOutput {
         Ok(sink)
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn ensure_sink(&self) {
+    fn default_device_for_backend(backend: AudioBackend) -> Option<AudioDevice> {
+        let host = rodio::cpal::host_from_id(backend).ok()?;
+        let device = host.default_output_device()?;
+
+        AudioDevice::from_cpal_device(backend, &device, true)
+    }
+
+    fn find_backend_device(device: &AudioDevice) -> Result<rodio::cpal::Device, AudioOutputError> {
+        let host = rodio::cpal::host_from_id(device.backend).map_err(|source| {
+            AudioOutputError::BackendUnavailable {
+                backend: device.backend,
+                source,
+            }
+        })?;
+
+        if let Some(id) = device.id.as_ref()
+            && let Some(device) = host.device_by_id(id)
+        {
+            return Ok(device);
+        }
+
+        host.output_devices()
+            .map_err(|source| AudioOutputError::ListDevices {
+                backend: device.backend,
+                source,
+            })?
+            .find(|candidate| device.matches_cpal_device(candidate))
+            .ok_or_else(|| AudioOutputError::DeviceNotFound {
+                device: Box::new(device.clone()),
+            })
+    }
+
+    fn open_device_sink(device: &AudioDevice) -> Result<MixerDeviceSink, AudioOutputError> {
+        let backend_device = Self::find_backend_device(device)?;
+        let mut sink = DeviceSinkBuilder::from_device(backend_device)
+            .and_then(|builder| builder.open_sink_or_fallback())
+            .map_err(|source| AudioOutputError::OpenDeviceStream {
+                device: Box::new(device.clone()),
+                source,
+            })?;
+
+        sink.log_on_drop(false);
+        Ok(sink)
+    }
+
+    fn retry_sink(&self) -> Result<(), AudioOutputError> {
         let mut mixer_device_sink = self.mixer_device_sink.lock().unwrap();
 
         if mixer_device_sink.is_none() {
-            *mixer_device_sink = match self.backend {
-                Some(backend) => Self::open_backend_sink(backend).ok(),
-                None => Self::open_default_sink(),
+            let sink = match (self.device.clone(), self.backend) {
+                (Some(device), _) => Self::open_device_sink(&device)?,
+                (None, Some(backend)) => Self::open_backend_sink(backend)?,
+                (None, None) => return Ok(()),
             };
+
+            *mixer_device_sink = Some(sink);
         }
+
+        Ok(())
+    }
+
+    fn has_sink(&self) -> bool {
+        self.mixer_device_sink.lock().unwrap().is_some()
     }
 
     fn connect_player(&self) -> Option<Player> {
@@ -583,6 +905,141 @@ impl AudioEffects {
     }
 }
 
+struct PlaybackRangeSource<S> {
+    input: S,
+    start: Duration,
+    end: Option<Duration>,
+    remaining: Option<Duration>,
+    duration_per_sample: Duration,
+    looping: Arc<AtomicBool>,
+}
+
+impl<S> PlaybackRangeSource<S>
+where
+    S: Source,
+{
+    fn new(
+        input: S,
+        start: Duration,
+        end: Option<Duration>,
+        position: Duration,
+        looping: Arc<AtomicBool>,
+    ) -> Self {
+        let duration_per_sample = Self::duration_per_sample(&input);
+
+        Self {
+            input,
+            start,
+            end,
+            remaining: end.map(|end| end.saturating_sub(position)),
+            duration_per_sample,
+            looping,
+        }
+    }
+
+    fn duration_per_sample(input: &S) -> Duration {
+        Duration::from_secs_f64(
+            1.0 / (f64::from(input.sample_rate().get()) * f64::from(input.channels().get())),
+        )
+    }
+
+    fn restart(&mut self) -> bool {
+        if !self.looping.load(Ordering::Relaxed) || self.input.try_seek(self.start).is_err() {
+            return false;
+        }
+
+        self.remaining = self.end.map(|end| end.saturating_sub(self.start));
+        self.duration_per_sample = Self::duration_per_sample(&self.input);
+        true
+    }
+}
+
+impl<S> Iterator for PlaybackRangeSource<S>
+where
+    S: Source,
+{
+    type Item = S::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self
+            .remaining
+            .is_some_and(|remaining| remaining <= self.duration_per_sample)
+            && !self.restart()
+        {
+            return None;
+        }
+
+        if let Some(sample) = self.input.next() {
+            if let Some(remaining) = self.remaining.as_mut() {
+                *remaining = remaining.saturating_sub(self.duration_per_sample);
+            }
+
+            return Some(sample);
+        }
+
+        if self.restart() {
+            let sample = self.input.next()?;
+
+            if let Some(remaining) = self.remaining.as_mut() {
+                *remaining = remaining.saturating_sub(self.duration_per_sample);
+            }
+
+            Some(sample)
+        } else {
+            None
+        }
+    }
+}
+
+impl<S> Source for PlaybackRangeSource<S>
+where
+    S: Source,
+{
+    fn current_span_len(&self) -> Option<usize> {
+        if self.looping.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let remaining_samples = self.remaining.map(|remaining| {
+            let samples = remaining.as_nanos() / self.duration_per_sample.as_nanos();
+            let channels = u128::from(self.input.channels().get());
+            (samples - samples % channels) as usize
+        });
+
+        match (self.input.current_span_len(), remaining_samples) {
+            (Some(input), Some(remaining)) => Some(input.min(remaining)),
+            (Some(input), None) => Some(input),
+            (None, remaining) => remaining,
+        }
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        self.input.channels()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.input.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        if self.looping.load(Ordering::Relaxed) {
+            None
+        } else {
+            self.end.map(|end| end.saturating_sub(self.start))
+        }
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        let position = self.end.map_or(position.max(self.start), |end| {
+            position.clamp(self.start, end)
+        });
+        self.input.try_seek(position)?;
+        self.remaining = self.end.map(|end| end.saturating_sub(position));
+        self.duration_per_sample = Self::duration_per_sample(&self.input);
+        Ok(())
+    }
+}
+
 /// rodisnyaa: Painless audio playback for native and web platforms.
 ///
 /// If you are only playing one audio track at a time, you can use [`Nyaa`] directly.
@@ -619,19 +1076,39 @@ pub struct Nyaa {
     position_offset: Duration,
 
     /// The player position corresponding to [`Self::position_offset`].
+    ///
+    /// You should probably use [`Nyaa::position()`] instead.
     player_position_anchor: Duration,
 
     /// The playback speed applied to the player.
+    ///
+    /// You should probably use [`Nyaa::speed()`] instead.
     speed: f32,
 
     /// The volume applied to the player.
+    ///
+    /// You should probably use [`Nyaa::volume()`] instead.
     volume: Mutex<f32>,
 
     /// The post-processing effects applied to playback sources.
+    ///
+    /// You should probably use [`Nyaa::effects()`] instead.
     effects: AudioEffects,
+
+    /// Whether playback repeats at its configured boundary.
+    looping: Arc<AtomicBool>,
+
+    /// The configured playback boundary within a source.
+    loop_range: Option<Range<Duration>>,
 
     /// Whether the offset is the complete position while no source is actively playing.
     position_is_held: bool,
+
+    /// The last observed playback lifecycle state.
+    playback_state: Mutex<PlaybackState>,
+
+    /// Playback lifecycle transitions waiting to be observed.
+    playback_events: Mutex<VecDeque<PlaybackEvent>>,
 
     /// The result of an audio asset being loaded in the browser.
     #[cfg(target_arch = "wasm32")]
@@ -653,6 +1130,17 @@ impl Nyaa {
         Self::new_with_output(AudioOutput::new())
     }
 
+    /// Creates a player and returns an error if its default audio output cannot be opened.
+    ///
+    /// Browser targets defer opening the output until playback or
+    /// [`Nyaa::retry_audio_output`] so initialization can occur in response to a user gesture.
+    pub fn try_new() -> Result<Self, AudioOutputError> {
+        let backend = rodio::cpal::default_host().id();
+        let audio_output = AudioOutput::try_new_with_backend(backend)?;
+
+        Ok(Self::new_with_output(audio_output))
+    }
+
     /// Creates a player connected to a reusable audio output.
     pub fn new_with_output(audio_output: AudioOutput) -> Self {
         let player = audio_output.connect_player();
@@ -670,7 +1158,11 @@ impl Nyaa {
             speed: 1.0,
             volume: Mutex::new(1.0),
             effects: AudioEffects::default(),
+            looping: Arc::new(AtomicBool::new(false)),
+            loop_range: None,
             position_is_held: true,
+            playback_state: Mutex::new(PlaybackState::Idle),
+            playback_events: Mutex::new(VecDeque::new()),
             #[cfg(target_arch = "wasm32")]
             pending_playback: None,
         }
@@ -682,6 +1174,39 @@ impl Nyaa {
     /// [`AudioOutput::from_sink`].
     pub fn audio_backend(&self) -> Option<AudioBackend> {
         self.audio_output.backend()
+    }
+
+    /// Returns the output device selected for this player, if one was chosen or resolved.
+    ///
+    /// Returns `None` when the player uses an [`AudioOutput`] created with
+    /// [`AudioOutput::from_sink`] or when the platform did not report a device description.
+    pub fn audio_device(&self) -> Option<AudioDevice> {
+        self.audio_output.device()
+    }
+
+    /// Returns whether this player currently has an initialized audio output.
+    ///
+    /// A browser player can return `false` until playback initializes WebAudio in response to a
+    /// user gesture.
+    pub fn has_audio_output(&self) -> bool {
+        self.audio_output.has_sink()
+    }
+
+    /// Retries opening this player's selected audio output.
+    ///
+    /// This can recover a player created by [`Nyaa::new`] after its initial best-effort device
+    /// initialization failed.
+    pub fn retry_audio_output(&mut self) -> Result<(), AudioOutputError> {
+        if let Err(error) = self.audio_output.retry_sink() {
+            self.set_playback_state(PlaybackState::Failed);
+            return Err(error);
+        }
+
+        if self.player.is_none() {
+            self.player = self.audio_output.connect_player();
+        }
+
+        Ok(())
     }
 
     /// Switches this player to a specific audio backend.
@@ -702,13 +1227,24 @@ impl Nyaa {
         Ok(())
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn ensure_audio_output(&mut self) {
-        self.audio_output.ensure_sink();
-
-        if self.player.is_none() {
-            self.player = self.audio_output.connect_player();
+    /// Switches this player to a specific output device such as a speaker, headphone, or
+    /// virtual device.
+    ///
+    /// A successful switch stops the current source and holds its last reported position.
+    /// Other players that shared the previous [`AudioOutput`] are not affected. Switching
+    /// devices also switches the player's backend to the device's backend.
+    pub fn switch_audio_device(&mut self, device: &AudioDevice) -> Result<(), AudioOutputError> {
+        if self.audio_device().as_ref() == Some(device) {
+            return Ok(());
         }
+
+        let audio_output = AudioOutput::try_new_with_device(device)?;
+
+        self.stop();
+        self.audio_output = audio_output;
+        self.player = self.audio_output.connect_player();
+
+        Ok(())
     }
 
     /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
@@ -763,12 +1299,30 @@ impl Nyaa {
     /// Resumes playback of a paused player.
     ///
     /// No effect if not paused.
-    fn play_source<S>(&mut self, mut source: S) -> Result<(), NyaaError>
+    fn play_source<S>(&mut self, source: S) -> Result<(), NyaaError>
     where
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
     {
-        let position = if self.is_empty() {
+        self.play_source_at(source, None)
+    }
+
+    fn play_source_at<S>(
+        &mut self,
+        mut source: S,
+        requested_position: Option<Duration>,
+    ) -> Result<(), NyaaError>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
+        let duration = source.total_duration();
+        let (range_start, range_end) = self
+            .playback_bounds(duration)
+            .map_err(|error| self.record_failure(error))?;
+        let position = if let Some(position) = requested_position {
+            position
+        } else if self.is_empty() {
             match source.total_duration() {
                 Some(duration) => self.position_offset.min(duration),
                 None => self.position_offset,
@@ -776,24 +1330,38 @@ impl Nyaa {
         } else {
             Duration::ZERO
         };
+        let position = range_end.map_or(position.max(range_start), |end| {
+            position.clamp(range_start, end)
+        });
 
         if !position.is_zero() {
-            source.try_seek(position).map_err(NyaaError::Seek)?;
+            source
+                .try_seek(position)
+                .map_err(NyaaError::Seek)
+                .map_err(|error| self.record_failure(error))?;
         }
 
-        let duration = source.total_duration();
+        let source = PlaybackRangeSource::new(
+            source,
+            range_start,
+            range_end,
+            position,
+            self.looping.clone(),
+        );
         let source = self.effects.apply(source);
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         *self.duration.lock().unwrap() = duration;
 
-        #[cfg(target_arch = "wasm32")]
-        self.ensure_audio_output();
+        if !self.has_audio_output() {
+            self.retry_audio_output()?;
+        }
 
-        let Some(new_player) = self.audio_output.connect_player() else {
-            return Ok(());
-        };
+        let new_player = self
+            .audio_output
+            .connect_player()
+            .expect("an initialized audio output must accept players");
         let volume = self.volume();
 
         new_player.set_volume(volume);
@@ -811,8 +1379,54 @@ impl Nyaa {
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = false;
+        self.set_playback_state(PlaybackState::Playing);
 
         Ok(())
+    }
+
+    fn play_current_source_at(&mut self, position: Duration) -> Result<(), NyaaError> {
+        if let Some(bytes) = self.current_shared_bytes.clone() {
+            let source = Self::decoder_from_shared_bytes(bytes.clone())
+                .map_err(|error| self.record_failure(error))?;
+            self.play_source_at(source, Some(position))?;
+            self.current_shared_bytes = Some(bytes);
+            return Ok(());
+        }
+
+        if let Some(bytes) = self.current_static_bytes {
+            let source = Self::decoder_from_static_bytes(bytes)
+                .map_err(|error| self.record_failure(error))?;
+            self.play_source_at(source, Some(position))?;
+            self.current_static_bytes = Some(bytes);
+            return Ok(());
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = self.current_file_path.clone() {
+            let source =
+                Self::decoder_from_file(&path).map_err(|error| self.record_failure(error))?;
+            self.play_source_at(source, Some(position))?;
+            self.current_file_path = Some(path);
+            return Ok(());
+        }
+
+        Err(self.record_failure(NyaaError::NoAudioSource))
+    }
+
+    fn playback_bounds(
+        &self,
+        duration: Option<Duration>,
+    ) -> Result<(Duration, Option<Duration>), NyaaError> {
+        let Some(range) = self.loop_range.as_ref() else {
+            return Ok((Duration::ZERO, duration));
+        };
+        let end = duration.map_or(range.end, |duration| range.end.min(duration));
+
+        if range.start >= end {
+            return Err(NyaaError::InvalidPlaybackRange);
+        }
+
+        Ok((range.start, Some(end)))
     }
 
     /// Plays bytes stored in an [`Arc`], which allows multiple players to share the same
@@ -820,7 +1434,8 @@ impl Nyaa {
     pub fn play_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
 
-        let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+        let source = Self::decoder_from_shared_bytes(bytes.clone())
+            .map_err(|error| self.record_failure(error))?;
         self.play_source(source)?;
         self.current_shared_bytes = Some(bytes);
 
@@ -829,7 +1444,9 @@ impl Nyaa {
 
     /// Loads static bytes and their duration without starting playback.
     pub fn load_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
-        let duration = Self::decoder_from_static_bytes(bytes)?.total_duration();
+        let duration = Self::decoder_from_static_bytes(bytes)
+            .map_err(|error| self.record_failure(error))?
+            .total_duration();
 
         if let Some(player) = self.player.as_ref() {
             player.stop();
@@ -845,6 +1462,7 @@ impl Nyaa {
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         *self.duration.lock().unwrap() = duration;
+        self.set_playback_state(PlaybackState::Idle);
 
         Ok(())
     }
@@ -852,7 +1470,8 @@ impl Nyaa {
     /// Plays bytes with a `'static` lifetime, such as data from `include_bytes!`, without
     /// copying the encoded audio onto the heap.
     pub fn play_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
-        let source = Self::decoder_from_static_bytes(bytes)?;
+        let source =
+            Self::decoder_from_static_bytes(bytes).map_err(|error| self.record_failure(error))?;
         self.play_source(source)?;
         self.current_static_bytes = Some(bytes);
 
@@ -863,7 +1482,7 @@ impl Nyaa {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
         let path = path.as_ref().to_path_buf();
-        let source = Self::decoder_from_file(&path)?;
+        let source = Self::decoder_from_file(&path).map_err(|error| self.record_failure(error))?;
 
         self.play_source(source)?;
         self.current_file_path = Some(path);
@@ -880,8 +1499,12 @@ impl Nyaa {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = asset.load_browser_bytes().await?;
-            let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+            let bytes = asset
+                .load_browser_bytes()
+                .await
+                .map_err(|error| self.record_failure(error))?;
+            let source = Self::decoder_from_shared_bytes(bytes.clone())
+                .map_err(|error| self.record_failure(error))?;
 
             self.play_source(source)?;
             self.current_shared_bytes = Some(bytes);
@@ -906,10 +1529,11 @@ impl Nyaa {
                 return Ok(());
             }
 
-            self.ensure_audio_output();
+            self.retry_audio_output()?;
 
             if let Some(bytes) = asset.cached_browser_bytes() {
-                let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+                let source = Self::decoder_from_shared_bytes(bytes.clone())
+                    .map_err(|error| self.record_failure(error))?;
 
                 self.play_source(source)?;
                 self.current_shared_bytes = Some(bytes);
@@ -926,6 +1550,7 @@ impl Nyaa {
             });
 
             self.pending_playback = Some(pending_playback);
+            self.set_playback_state(PlaybackState::Loading);
 
             Ok(())
         }
@@ -945,27 +1570,73 @@ impl Nyaa {
             let result = self.pending_playback.as_ref()?.borrow_mut().take()?;
             self.pending_playback = None;
 
-            Some(result.and_then(|bytes| {
+            let result = result.and_then(|bytes| {
                 let source = Self::decoder_from_shared_bytes(bytes.clone())?;
                 self.play_source(source)?;
                 self.current_shared_bytes = Some(bytes);
 
                 Ok(())
-            }))
+            });
+
+            if result.is_err() {
+                self.set_playback_state(PlaybackState::Failed);
+            }
+
+            Some(result)
         }
+    }
+
+    /// Returns the current playback lifecycle state.
+    pub fn state(&self) -> PlaybackState {
+        self.refresh_playback_state();
+        *self.playback_state.lock().unwrap()
+    }
+
+    /// Returns the next pending playback lifecycle event.
+    ///
+    /// Natural playback completion is detected when this method or [`Nyaa::state`] is called.
+    pub fn poll_event(&self) -> Option<PlaybackEvent> {
+        self.refresh_playback_state();
+        self.playback_events.lock().unwrap().pop_front()
+    }
+
+    fn refresh_playback_state(&self) {
+        let state = *self.playback_state.lock().unwrap();
+
+        if matches!(state, PlaybackState::Playing | PlaybackState::Paused)
+            && self.player.as_ref().is_none_or(Player::empty)
+        {
+            self.set_playback_state(PlaybackState::Ended);
+        }
+    }
+
+    fn set_playback_state(&self, state: PlaybackState) {
+        let mut current = self.playback_state.lock().unwrap();
+
+        if *current == state {
+            return;
+        }
+
+        let previous = *current;
+        *current = state;
+        drop(current);
+        self.playback_events
+            .lock()
+            .unwrap()
+            .push_back(PlaybackEvent::StateChanged {
+                previous,
+                current: state,
+            });
+    }
+
+    fn record_failure(&self, error: NyaaError) -> NyaaError {
+        self.set_playback_state(PlaybackState::Failed);
+        error
     }
 
     /// Returns whether a browser audio asset is currently loading.
     pub fn is_loading(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            false
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.pending_playback.is_some()
-        }
+        self.state() == PlaybackState::Loading
     }
 
     /// Attempts to seek to a given position in the current source.
@@ -988,7 +1659,10 @@ impl Nyaa {
         {
             match self.player.as_ref() {
                 Some(player) => {
-                    player.try_seek(position).map_err(NyaaError::Seek)?;
+                    player
+                        .try_seek(position)
+                        .map_err(NyaaError::Seek)
+                        .map_err(|error| self.record_failure(error))?;
                     self.position_offset = position;
                     self.player_position_anchor = position;
                     self.position_is_held = false;
@@ -1090,15 +1764,32 @@ impl Nyaa {
         // This decoder is NOT owned by the audio callback yet,
         // therefore this seek executes directly on this thread.
 
-        source.try_seek(position).map_err(NyaaError::Seek)?;
+        let (range_start, range_end) = self
+            .playback_bounds(source.total_duration())
+            .map_err(|error| self.record_failure(error))?;
+        let position = range_end.map_or(position.max(range_start), |end| {
+            position.clamp(range_start, end)
+        });
+        source
+            .try_seek(position)
+            .map_err(NyaaError::Seek)
+            .map_err(|error| self.record_failure(error))?;
+        let source = PlaybackRangeSource::new(
+            source,
+            range_start,
+            range_end,
+            position,
+            self.looping.clone(),
+        );
         let source = self.effects.apply(source);
 
         let was_paused = player.is_paused();
         let volume = self.volume();
 
-        let Some(new_player) = self.audio_output.connect_player() else {
-            return Ok(());
-        };
+        let new_player = self
+            .audio_output
+            .connect_player()
+            .expect("an initialized audio output must accept players");
 
         new_player.set_volume(volume);
         new_player.set_speed(self.speed);
@@ -1216,9 +1907,26 @@ impl Nyaa {
 
     fn position_at_player_time(&self, player_position: Duration) -> Duration {
         let elapsed = player_position.saturating_sub(self.player_position_anchor);
-        let position = self
+        let mut position = self
             .position_offset
             .saturating_add(elapsed.mul_f32(self.speed));
+
+        if self.is_looping()
+            && let Ok((start, Some(end))) = self.playback_bounds(self.duration())
+            && position >= end
+        {
+            let range_duration = end - start;
+            let range_nanos = range_duration.as_nanos();
+
+            if range_nanos > 0 {
+                let position_nanos = position.saturating_sub(start).as_nanos() % range_nanos;
+                position = start
+                    + Duration::new(
+                        (position_nanos / 1_000_000_000) as u64,
+                        (position_nanos % 1_000_000_000) as u32,
+                    );
+            }
+        }
 
         match self.duration() {
             Some(duration) => position.min(duration),
@@ -1270,6 +1978,10 @@ impl Nyaa {
         if let Some(player) = self.player.as_ref() {
             player.pause();
         }
+
+        if self.state() == PlaybackState::Playing {
+            self.set_playback_state(PlaybackState::Paused);
+        }
     }
 
     /// Resumes playback of a paused player.
@@ -1278,6 +1990,10 @@ impl Nyaa {
     pub fn resume(&self) {
         if let Some(player) = self.player.as_ref() {
             player.play();
+        }
+
+        if self.state() == PlaybackState::Paused {
+            self.set_playback_state(PlaybackState::Playing);
         }
     }
 
@@ -1298,6 +2014,7 @@ impl Nyaa {
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
+        self.set_playback_state(PlaybackState::Idle);
     }
 
     /// Changes the volume of the sound.
@@ -1343,6 +2060,70 @@ impl Nyaa {
         self.speed
     }
 
+    /// Enables or disables repeating at the configured playback boundary.
+    ///
+    /// Without a loop range, the complete source repeats. Changes apply to active playback at
+    /// its next boundary as well as to future sources.
+    pub fn set_looping(&self, looping: bool) {
+        self.looping.store(looping, Ordering::Relaxed);
+    }
+
+    /// Returns whether playback repeats at its configured boundary.
+    pub fn is_looping(&self) -> bool {
+        self.looping.load(Ordering::Relaxed)
+    }
+
+    /// Sets the source-time range used as the playback and looping boundary.
+    ///
+    /// The range applies to active and future playback. Its end is clamped to the source duration.
+    pub fn set_loop_range(&mut self, range: Range<Duration>) -> Result<(), NyaaError> {
+        if range.start >= range.end {
+            return Err(NyaaError::InvalidPlaybackRange);
+        }
+
+        let state = self.state();
+        let position = self.position().clamp(range.start, range.end);
+        let previous_range = self.loop_range.replace(range);
+
+        if matches!(state, PlaybackState::Playing | PlaybackState::Paused)
+            && let Err(error) = self.try_seek_with_decode(position)
+        {
+            self.loop_range = previous_range;
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    /// Plays a source-time range from the current loaded or previously played source.
+    ///
+    /// Playback stops at the range end unless looping is enabled with [`Nyaa::set_looping`].
+    pub fn play_range(&mut self, range: Range<Duration>) -> Result<(), NyaaError> {
+        if range.start >= range.end {
+            return Err(self.record_failure(NyaaError::InvalidPlaybackRange));
+        }
+
+        let position = range.start;
+        let previous_range = self.loop_range.replace(range);
+        let result = self.play_current_source_at(position);
+
+        if result.is_err() {
+            self.loop_range = previous_range;
+        }
+
+        result
+    }
+
+    /// Returns the configured playback and looping range.
+    pub fn loop_range(&self) -> Option<Range<Duration>> {
+        self.loop_range.clone()
+    }
+
+    /// Removes the configured playback and looping range.
+    pub fn clear_loop_range(&mut self) {
+        self.loop_range = None;
+    }
+
     /// Gets if a sink is playing
     ///
     /// Equivalent to `!is_paused() && !is_empty()`.
@@ -1350,11 +2131,7 @@ impl Nyaa {
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
     /// sink is playing.
     pub fn is_playing(&self) -> bool {
-        !self.position_is_held
-            && self
-                .player
-                .as_ref()
-                .is_some_and(|player| !player.is_paused() && !player.empty())
+        self.state() == PlaybackState::Playing
     }
 
     /// Gets if a sink is paused
@@ -1362,12 +2139,12 @@ impl Nyaa {
     /// Players can be paused and resumed using `pause()` and `play()`. This returns `true` if the
     /// sink is paused.
     pub fn is_paused(&self) -> bool {
-        self.player.as_ref().is_some_and(Player::is_paused)
+        self.state() == PlaybackState::Paused
     }
 
     /// Returns true if this sink has no more sounds to play.
     pub fn is_empty(&self) -> bool {
-        self.position_is_held || self.player.as_ref().is_none_or(Player::empty)
+        !matches!(self.state(), PlaybackState::Playing | PlaybackState::Paused)
     }
 
     /// Sleeps the current thread until the sound ends.
@@ -1500,6 +2277,74 @@ mod tests {
     }
 
     #[test]
+    fn playback_state_and_events_follow_transport_controls() {
+        let mut nyaa = Nyaa::new();
+
+        assert_eq!(nyaa.state(), PlaybackState::Idle);
+        assert_eq!(nyaa.poll_event(), None);
+
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+        assert_eq!(nyaa.state(), PlaybackState::Playing);
+        assert_eq!(
+            nyaa.poll_event(),
+            Some(PlaybackEvent::StateChanged {
+                previous: PlaybackState::Idle,
+                current: PlaybackState::Playing,
+            })
+        );
+
+        nyaa.pause();
+        assert_eq!(nyaa.state(), PlaybackState::Paused);
+        assert_eq!(
+            nyaa.poll_event(),
+            Some(PlaybackEvent::StateChanged {
+                previous: PlaybackState::Playing,
+                current: PlaybackState::Paused,
+            })
+        );
+
+        nyaa.stop();
+        assert_eq!(nyaa.state(), PlaybackState::Idle);
+        assert_eq!(
+            nyaa.poll_event(),
+            Some(PlaybackEvent::StateChanged {
+                previous: PlaybackState::Paused,
+                current: PlaybackState::Idle,
+            })
+        );
+    }
+
+    #[test]
+    fn configured_range_bounds_playback_and_can_loop() {
+        let mut nyaa = Nyaa::new();
+        let range = Duration::from_secs(42)..Duration::from_millis(42_050);
+
+        nyaa.set_loop_range(range.clone())
+            .expect("a non-empty range should be accepted");
+        nyaa.set_looping(true);
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("the configured range should be playable");
+        thread::sleep(Duration::from_millis(125));
+
+        assert_eq!(nyaa.state(), PlaybackState::Playing);
+        assert!(range.contains(&nyaa.position()));
+    }
+
+    #[test]
+    fn play_range_stops_at_its_end() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.load_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be loadable");
+        nyaa.play_range(Duration::from_secs(42)..Duration::from_millis(42_050))
+            .expect("a range from the loaded source should be playable");
+        thread::sleep(Duration::from_millis(125));
+
+        assert_eq!(nyaa.state(), PlaybackState::Ended);
+    }
+
+    #[test]
     fn players_sharing_an_output_keep_independent_state() {
         let output = AudioOutput::new();
         let mut first = Nyaa::new_with_output(output.clone());
@@ -1595,5 +2440,87 @@ mod tests {
             advancement >= Duration::from_millis(350),
             "position advanced only {advancement:?} during 250ms of playback at 2x speed"
         );
+    }
+
+    #[test]
+    fn output_device_enumeration_reports_usable_devices() {
+        let backends = AudioOutput::available_backends();
+        let devices = AudioOutput::available_output_devices();
+
+        for device in &devices {
+            assert!(
+                !device.name().is_empty(),
+                "enumerated device has an empty name"
+            );
+            assert!(
+                backends.contains(&device.backend()),
+                "device {} reports unknown backend {:?}",
+                device.name(),
+                device.backend()
+            );
+            assert_eq!(device.description().name(), device.name());
+            assert!(
+                device.to_string().contains(device.name()),
+                "device display should contain its name"
+            );
+        }
+
+        let mut defaults_per_backend = std::collections::HashMap::new();
+        for device in &devices {
+            if device.is_default() {
+                *defaults_per_backend.entry(device.backend()).or_insert(0) += 1;
+            }
+        }
+
+        for (backend, defaults) in defaults_per_backend {
+            assert!(
+                defaults <= 1,
+                "backend {backend} reports {defaults} default devices"
+            );
+        }
+
+        for backend in backends {
+            match AudioOutput::available_output_devices_for_backend(backend) {
+                Ok(backend_devices) => {
+                    assert!(
+                        backend_devices
+                            .iter()
+                            .all(|device| device.backend() == backend),
+                        "backend {backend} listed a device from another backend"
+                    );
+                }
+                Err(error) => {
+                    assert!(
+                        matches!(error, AudioOutputError::ListDevices { .. }),
+                        "unexpected enumeration error for backend {backend}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn switching_to_a_listed_device_selects_it() {
+        let devices = AudioOutput::available_output_devices();
+
+        for device in &devices {
+            let Ok(output) = AudioOutput::try_new_with_device(device) else {
+                continue;
+            };
+
+            assert_eq!(output.backend(), Some(device.backend()));
+            assert_eq!(output.device().as_ref(), Some(device));
+
+            let mut nyaa = Nyaa::new_with_output(output);
+            assert_eq!(nyaa.audio_device().as_ref(), Some(device));
+            assert_eq!(nyaa.audio_backend(), Some(device.backend()));
+
+            nyaa.switch_audio_device(device)
+                .expect("switching to the current device should be a no-op");
+
+            nyaa.load_static_bytes(TEST_AUDIO_BYTES)
+                .expect("device output should accept players");
+            return;
+        }
     }
 }

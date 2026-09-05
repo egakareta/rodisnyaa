@@ -2,9 +2,9 @@ use web_time::Duration;
 
 use eframe::egui;
 use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, AudioAsset, AudioBackend, AudioEffects, AudioOutput,
-    AutomaticGainEffect, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, ReverbEffect,
-    Waveform, WaveformBuilder,
+    format_timestamp_secs, parse_timestamp, AudioAsset, AudioBackend, AudioDevice, AudioEffects,
+    AudioOutput, AutomaticGainEffect, DistortionEffect, FilterEffect, LimiterEffect, Nyaa,
+    ReverbEffect, Waveform, WaveformBuilder,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -146,6 +146,7 @@ struct App {
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
     audio_backends: Vec<AudioBackend>,
+    audio_devices: Vec<AudioDevice>,
     selected_song: usize,
     audio_assets: Vec<AudioAsset>,
     effects: AudioEffects,
@@ -174,6 +175,7 @@ impl App {
             waveform_window: WaveformWindow::default(),
             audio_mode: AudioMode::StaticBytes,
             audio_backends: AudioOutput::available_backends(),
+            audio_devices: AudioOutput::available_output_devices(),
             selected_song: DEFAULT_SONG_INDEX,
             audio_assets,
             effects: AudioEffects::default(),
@@ -216,10 +218,32 @@ impl App {
             return;
         }
 
+        self.audio_devices = AudioOutput::available_output_devices();
+
         let song = SONGS[self.selected_song];
 
         if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
             log::error!("could not reload audio after switching backends: {error}");
+        }
+    }
+
+    fn refresh_audio_devices(&mut self) {
+        self.audio_backends = AudioOutput::available_backends();
+        self.audio_devices = AudioOutput::available_output_devices();
+    }
+
+    fn select_audio_device(&mut self, audio_device: &AudioDevice) {
+        if let Err(error) = self.nyaa.switch_audio_device(audio_device) {
+            log::error!("could not switch audio device: {error}");
+            return;
+        }
+
+        self.audio_devices = AudioOutput::available_output_devices();
+
+        let song = SONGS[self.selected_song];
+
+        if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
+            log::error!("could not reload audio after switching devices: {error}");
         }
     }
 
@@ -698,6 +722,8 @@ impl eframe::App for App {
                 ui.vertical_centered(|ui| {
                     let mut selected_song = self.selected_song;
                     let mut selected_audio_backend = self.nyaa.audio_backend();
+                    let mut selected_audio_device = self.nyaa.audio_device();
+                    let mut refresh_devices = false;
 
                     ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
                         ui.horizontal(|ui| {
@@ -731,7 +757,43 @@ impl eframe::App for App {
                                     }
                                 });
                         });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Output device:");
+                            let selected_text = selected_audio_device
+                                .as_ref()
+                                .map(|device| device.to_string())
+                                .unwrap_or_else(|| "Custom output".to_string());
+                            egui::ComboBox::from_id_salt("audio_device_selector")
+                                .selected_text(selected_text)
+                                .width(240.0)
+                                .show_ui(ui, |ui| {
+                                    if self.audio_devices.is_empty() {
+                                        ui.label("No output devices found");
+                                    }
+
+                                    for device in &self.audio_devices {
+                                        ui.selectable_value(
+                                            &mut selected_audio_device,
+                                            Some(device.clone()),
+                                            device.to_string(),
+                                        );
+                                    }
+                                });
+
+                            if ui
+                                .button("Refresh")
+                                .on_hover_text("Re-enumerate output devices")
+                                .clicked()
+                            {
+                                refresh_devices = true;
+                            }
+                        });
                     });
+
+                    if refresh_devices {
+                        self.refresh_audio_devices();
+                    }
 
                     if selected_song != self.selected_song {
                         self.select_song(selected_song);
@@ -740,6 +802,10 @@ impl eframe::App for App {
                     if selected_audio_backend != self.nyaa.audio_backend() {
                         if let Some(audio_backend) = selected_audio_backend {
                             self.select_audio_backend(audio_backend);
+                        }
+                    } else if selected_audio_device != self.nyaa.audio_device() {
+                        if let Some(audio_device) = selected_audio_device {
+                            self.select_audio_device(&audio_device);
                         }
                     }
 
