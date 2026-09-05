@@ -50,6 +50,8 @@ fn play_my_audio_cross_platform() -> Result<(), NyaaError> {
 > Browsers require audio output to be opened in response to a user gesture.
 > Start playback from a click, pointer, or keyboard event when possible.
 
+Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/examples) for more guidance.
+
 ## Feature flags
 
 | Feature             | Enables              |

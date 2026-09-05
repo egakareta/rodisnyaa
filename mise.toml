@@ -1,4 +1,5 @@
 [tools]
+clang = "latest"
 lefthook = "latest"
 oxfmt = "latest"
 rust = { version = "nightly-2026-03-12", components = [

@@ -2,8 +2,9 @@ use web_time::Duration;
 
 use eframe::egui;
 use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, AudioAsset, AudioBackend, AudioOutput, Nyaa, Waveform,
-    WaveformBuilder,
+    format_timestamp_secs, parse_timestamp, AudioAsset, AudioBackend, AudioEffects, AudioOutput,
+    AutomaticGainEffect, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, ReverbEffect,
+    Waveform, WaveformBuilder,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -147,6 +148,7 @@ struct App {
     audio_backends: Vec<AudioBackend>,
     selected_song: usize,
     audio_assets: Vec<AudioAsset>,
+    effects: AudioEffects,
 }
 
 impl App {
@@ -174,6 +176,7 @@ impl App {
             audio_backends: AudioOutput::available_backends(),
             selected_song: DEFAULT_SONG_INDEX,
             audio_assets,
+            effects: AudioEffects::default(),
         }
     }
 
@@ -222,6 +225,255 @@ impl App {
 
     fn stop(&mut self) {
         self.nyaa.stop();
+    }
+
+    fn show_effects(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Post processing")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("post_processing_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(16.0, 8.0))
+                    .show(ui, |ui| {
+                        ui.label("Input gain");
+                        ui.add(
+                            egui::Slider::new(&mut self.effects.input_gain, 0.0..=4.0)
+                                .suffix("x")
+                                .logarithmic(true),
+                        );
+                        ui.end_row();
+
+                        ui.label("Fade in");
+                        let mut fade_in_secs = self.effects.fade_in.as_secs_f64();
+                        if ui
+                            .add(egui::Slider::new(&mut fade_in_secs, 0.0..=5.0).suffix(" s"))
+                            .changed()
+                        {
+                            self.effects.fade_in = Duration::from_secs_f64(fade_in_secs);
+                        }
+                        ui.end_row();
+
+                        let mut high_pass_enabled = self.effects.high_pass.is_some();
+                        if ui.checkbox(&mut high_pass_enabled, "High-pass").changed() {
+                            self.effects.high_pass = high_pass_enabled.then_some(FilterEffect {
+                                frequency: 120,
+                                ..FilterEffect::default()
+                            });
+                        }
+                        if let Some(effect) = self.effects.high_pass.as_mut() {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Slider::new(&mut effect.frequency, 20..=5_000)
+                                        .suffix(" Hz")
+                                        .logarithmic(true),
+                                );
+                                ui.add(egui::Slider::new(&mut effect.q, 0.1..=2.0).prefix("Q "));
+                            });
+                        } else {
+                            ui.label("Off");
+                        }
+                        ui.end_row();
+
+                        let mut low_pass_enabled = self.effects.low_pass.is_some();
+                        if ui.checkbox(&mut low_pass_enabled, "Low-pass").changed() {
+                            self.effects.low_pass = low_pass_enabled.then_some(FilterEffect {
+                                frequency: 8_000,
+                                ..FilterEffect::default()
+                            });
+                        }
+                        if let Some(effect) = self.effects.low_pass.as_mut() {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Slider::new(&mut effect.frequency, 100..=20_000)
+                                        .suffix(" Hz")
+                                        .logarithmic(true),
+                                );
+                                ui.add(egui::Slider::new(&mut effect.q, 0.1..=2.0).prefix("Q "));
+                            });
+                        } else {
+                            ui.label("Off");
+                        }
+                        ui.end_row();
+
+                        let mut distortion_enabled = self.effects.distortion.is_some();
+                        if ui.checkbox(&mut distortion_enabled, "Distortion").changed() {
+                            self.effects.distortion =
+                                distortion_enabled.then_some(DistortionEffect::default());
+                        }
+                        if let Some(effect) = self.effects.distortion.as_mut() {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Slider::new(&mut effect.gain, 1.0..=20.0)
+                                        .prefix("Gain ")
+                                        .logarithmic(true),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut effect.threshold, 0.05..=1.0)
+                                        .prefix("Clip "),
+                                );
+                            });
+                        } else {
+                            ui.label("Off");
+                        }
+                        ui.end_row();
+
+                        let mut automatic_gain_enabled = self.effects.automatic_gain.is_some();
+                        if ui
+                            .checkbox(&mut automatic_gain_enabled, "Automatic gain")
+                            .changed()
+                        {
+                            self.effects.automatic_gain =
+                                automatic_gain_enabled.then_some(AutomaticGainEffect::default());
+                        }
+                        if let Some(effect) = self.effects.automatic_gain.as_mut() {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut effect.target_level, 0.1..=2.0)
+                                            .prefix("Target "),
+                                    );
+                                    ui.add(
+                                        egui::Slider::new(&mut effect.maximum_gain, 1.0..=10.0)
+                                            .prefix("Max "),
+                                    );
+                                });
+
+                                let mut attack_secs = effect.attack.as_secs_f64();
+                                let mut release_secs = effect.release.as_secs_f64();
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add(
+                                            egui::Slider::new(&mut attack_secs, 0.0..=10.0)
+                                                .prefix("Attack ")
+                                                .suffix(" s"),
+                                        )
+                                        .changed()
+                                    {
+                                        effect.attack = Duration::from_secs_f64(attack_secs);
+                                    }
+                                    if ui
+                                        .add(
+                                            egui::Slider::new(&mut release_secs, 0.0..=10.0)
+                                                .prefix("Release ")
+                                                .suffix(" s"),
+                                        )
+                                        .changed()
+                                    {
+                                        effect.release = Duration::from_secs_f64(release_secs);
+                                    }
+                                });
+                            });
+                        } else {
+                            ui.label("Off");
+                        }
+                        ui.end_row();
+
+                        let mut reverb_enabled = self.effects.reverb.is_some();
+                        if ui.checkbox(&mut reverb_enabled, "Reverb").changed() {
+                            self.effects.reverb = reverb_enabled.then_some(ReverbEffect::default());
+                        }
+                        if let Some(effect) = self.effects.reverb.as_mut() {
+                            let mut delay_ms = effect.delay.as_secs_f64() * 1_000.0;
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut delay_ms, 20.0..=500.0)
+                                            .prefix("Delay ")
+                                            .suffix(" ms")
+                                            .logarithmic(true),
+                                    )
+                                    .changed()
+                                {
+                                    effect.delay = Duration::from_secs_f64(delay_ms / 1_000.0);
+                                }
+                                ui.add(
+                                    egui::Slider::new(&mut effect.amplitude, 0.0..=1.0)
+                                        .prefix("Mix "),
+                                );
+                            });
+                        } else {
+                            ui.label("Off");
+                        }
+                        ui.end_row();
+
+                        let mut limiter_enabled = self.effects.limiter.is_some();
+                        if ui.checkbox(&mut limiter_enabled, "Limiter").changed() {
+                            self.effects.limiter =
+                                limiter_enabled.then_some(LimiterEffect::default());
+                        }
+                        if let Some(effect) = self.effects.limiter.as_mut() {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Slider::new(&mut effect.threshold_db, -20.0..=-0.1)
+                                            .prefix("Threshold ")
+                                            .suffix(" dB"),
+                                    );
+                                    ui.add(
+                                        egui::Slider::new(&mut effect.knee_width_db, 0.0..=12.0)
+                                            .prefix("Knee ")
+                                            .suffix(" dB"),
+                                    );
+                                });
+
+                                let mut attack_ms = effect.attack.as_secs_f64() * 1_000.0;
+                                let mut release_ms = effect.release.as_secs_f64() * 1_000.0;
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add(
+                                            egui::Slider::new(&mut attack_ms, 0.1..=50.0)
+                                                .prefix("Attack ")
+                                                .suffix(" ms")
+                                                .logarithmic(true),
+                                        )
+                                        .changed()
+                                    {
+                                        effect.attack =
+                                            Duration::from_secs_f64(attack_ms / 1_000.0);
+                                    }
+                                    if ui
+                                        .add(
+                                            egui::Slider::new(&mut release_ms, 10.0..=500.0)
+                                                .prefix("Release ")
+                                                .suffix(" ms")
+                                                .logarithmic(true),
+                                        )
+                                        .changed()
+                                    {
+                                        effect.release =
+                                            Duration::from_secs_f64(release_ms / 1_000.0);
+                                    }
+                                });
+                            });
+                        } else {
+                            ui.label("Off");
+                        }
+                        ui.end_row();
+                    });
+
+                ui.horizontal(|ui| {
+                    let has_changes = self.effects != self.nyaa.effects();
+
+                    if ui
+                        .add_enabled(has_changes, egui::Button::new("Apply"))
+                        .clicked()
+                    {
+                        if let Err(error) = self.nyaa.set_effects(self.effects) {
+                            log::error!("could not apply audio effects: {error}");
+                        }
+                    }
+
+                    if ui.button("Reset").clicked() {
+                        let effects = AudioEffects::default();
+
+                        if let Err(error) = self.nyaa.set_effects(effects) {
+                            log::error!("could not reset audio effects: {error}");
+                        } else {
+                            self.effects = effects;
+                        }
+                    }
+                });
+            });
     }
 
     fn show_waveform(&mut self, ui: &mut egui::Ui) {
@@ -442,260 +694,269 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                let mut selected_song = self.selected_song;
-                let mut selected_audio_backend = self.nyaa.audio_backend();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    let mut selected_song = self.selected_song;
+                    let mut selected_audio_backend = self.nyaa.audio_backend();
 
-                ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Song:");
-                        egui::ComboBox::from_id_salt("song_selector")
-                            .selected_text(SONGS[selected_song].title)
-                            .width(240.0)
-                            .show_ui(ui, |ui| {
-                                for (index, song) in SONGS.iter().enumerate() {
-                                    ui.selectable_value(&mut selected_song, index, song.title);
-                                }
-                            });
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Audio backend:");
-                        egui::ComboBox::from_id_salt("audio_backend_selector")
-                            .selected_text(
-                                selected_audio_backend
-                                    .map(|backend| backend.name())
-                                    .unwrap_or("Custom output"),
-                            )
-                            .width(240.0)
-                            .show_ui(ui, |ui| {
-                                for &backend in &self.audio_backends {
-                                    ui.selectable_value(
-                                        &mut selected_audio_backend,
-                                        Some(backend),
-                                        backend.name(),
-                                    );
-                                }
-                            });
-                    });
-                });
-
-                if selected_song != self.selected_song {
-                    self.select_song(selected_song);
-                }
-
-                if selected_audio_backend != self.nyaa.audio_backend() {
-                    if let Some(audio_backend) = selected_audio_backend {
-                        self.select_audio_backend(audio_backend);
-                    }
-                }
-
-                self.show_waveform(ui);
-
-                let tab_width = 90.0;
-                let tab_height = ui.spacing().interact_size.y;
-                let gap = ui.spacing().item_spacing.x;
-                let tabs_width = tab_width * 2.0 + gap;
-
-                ui.horizontal(|ui| {
-                    let offset = ((ui.available_width() - tabs_width) / 2.0).max(0.0);
-                    ui.add_space(offset);
-
-                    if ui
-                        .add_sized(
-                            [tab_width, tab_height],
-                            egui::Button::selectable(
-                                self.audio_mode == AudioMode::StaticBytes,
-                                "Static bytes",
-                            ),
-                        )
-                        .clicked()
-                    {
-                        self.audio_mode = AudioMode::StaticBytes;
-                    }
-
-                    if ui
-                        .add_sized(
-                            [tab_width, tab_height],
-                            egui::Button::selectable(self.audio_mode == AudioMode::File, "File"),
-                        )
-                        .clicked()
-                    {
-                        self.audio_mode = AudioMode::File;
-                    }
-                });
-
-                let control_width = ui.available_width().min(360.0);
-
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 0.0),
-                    egui::Layout::top_down(egui::Align::Center),
-                    |ui| {
-                        ui.set_width(control_width);
-
-                        ui.spacing_mut().slider_width = control_width;
-
-                        let mut position_secs: f64 = self.nyaa.clamped_position().as_secs_f64();
-                        let response = ui.add(
-                            egui::Slider::new(&mut position_secs, self.nyaa.seek_range())
-                                .show_value(false),
-                        );
-
-                        if response.drag_started() {
-                            self.nyaa.pause();
-                        }
-
-                        if response.changed() {
-                            if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
-                                log::error!("could not seek audio: {error}");
-                            }
-                        }
-
-                        if response.drag_stopped() {
-                            self.nyaa.resume();
-                        }
-
-                        let is_loading = self.nyaa.is_loading();
-                        let button_size = ui.spacing().interact_size;
-
-                        let (row_rect, _) = ui.allocate_exact_size(
-                            egui::vec2(control_width, button_size.y),
-                            egui::Sense::hover(),
-                        );
-
-                        let button_rect =
-                            egui::Rect::from_center_size(row_rect.center(), button_size);
-
-                        let left_rect = egui::Rect::from_min_max(
-                            row_rect.min,
-                            egui::pos2(button_rect.left(), row_rect.bottom()),
-                        );
-
-                        let mut left_ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .id_salt("position_control")
-                                .max_rect(left_rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-
-                        let response = left_ui.add(
-                            egui::DragValue::new(&mut position_secs)
-                                .range(self.nyaa.seek_range())
-                                .custom_formatter(|position, _| format_timestamp_secs(position))
-                                .custom_parser(|input| parse_timestamp(input).map(f64::from)),
-                        );
-
-                        if response.changed() {
-                            if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
-                                log::error!("could not seek audio: {error}");
-                            }
-                        }
-
-                        let mut button_builder = egui::UiBuilder::new()
-                            .id_salt("play_button")
-                            .max_rect(button_rect)
-                            .layout(egui::Layout::centered_and_justified(
-                                egui::Direction::TopDown,
-                            ));
-
-                        if is_loading {
-                            button_builder = button_builder.disabled();
-                        }
-
-                        let mut button_ui = ui.new_child(button_builder);
-
-                        let button =
-                            button_ui
-                                .add(egui::Button::new(""))
-                                .on_hover_text(if is_loading {
-                                    "Loading"
-                                } else if self.nyaa.is_playing() {
-                                    "Stop"
-                                } else {
-                                    "Play"
+                    ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Song:");
+                            egui::ComboBox::from_id_salt("song_selector")
+                                .selected_text(SONGS[selected_song].title)
+                                .width(240.0)
+                                .show_ui(ui, |ui| {
+                                    for (index, song) in SONGS.iter().enumerate() {
+                                        ui.selectable_value(&mut selected_song, index, song.title);
+                                    }
                                 });
-
-                        let center = button.rect.center();
-                        let icon_color = button_ui.style().interact(&button).fg_stroke.color;
-
-                        if is_loading {
-                            button_ui.painter().text(
-                                center,
-                                egui::Align2::CENTER_CENTER,
-                                "...",
-                                egui::TextStyle::Button.resolve(button_ui.style()),
-                                icon_color,
-                            );
-                        } else if self.nyaa.is_playing() {
-                            let size = 8.0;
-                            button_ui.painter().rect_filled(
-                                egui::Rect::from_center_size(center, egui::vec2(size, size)),
-                                0.0,
-                                icon_color,
-                            );
-                        } else {
-                            let half_h = 6.0;
-                            let half_w = 5.0;
-
-                            button_ui.painter().add(egui::Shape::convex_polygon(
-                                vec![
-                                    egui::pos2(center.x - half_w, center.y - half_h),
-                                    egui::pos2(center.x - half_w, center.y + half_h),
-                                    egui::pos2(center.x + half_w, center.y),
-                                ],
-                                icon_color,
-                                egui::Stroke::NONE,
-                            ));
-                        }
-
-                        if button.clicked() {
-                            if self.nyaa.is_playing() {
-                                self.stop();
-                            } else {
-                                self.play();
-                            }
-                        }
-
-                        ui.painter().text(
-                            egui::pos2(row_rect.right(), row_rect.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            self.nyaa.duration_formatted(),
-                            egui::TextStyle::Body.resolve(ui.style()),
-                            ui.visuals().text_color(),
-                        );
-
-                        ui.add_space(30.0);
-
-                        ui.columns(2, |columns| {
-                            let mut speed = self.nyaa.speed();
-                            let speed_width = columns[0].available_width();
-                            columns[0].label(format!("Speed: {speed:.2}x"));
-                            columns[0].spacing_mut().slider_width = speed_width;
-
-                            let response = columns[0].add(
-                                egui::Slider::new(&mut speed, 0.5..=2.0)
-                                    .show_value(false)
-                                    .logarithmic(true),
-                            );
-
-                            if response.changed() {
-                                self.nyaa.set_speed(speed);
-                            }
-
-                            let mut volume = self.nyaa.volume() * 100.0;
-                            let volume_width = columns[1].available_width();
-                            columns[1].label(format!("Volume: {volume:.0}%"));
-                            columns[1].spacing_mut().slider_width = volume_width;
-
-                            let response = columns[1]
-                                .add(egui::Slider::new(&mut volume, 0.0..=100.0).show_value(false));
-
-                            if response.changed() {
-                                self.nyaa.set_volume(volume / 100.0);
-                            }
                         });
-                    },
-                );
+
+                        ui.horizontal(|ui| {
+                            ui.label("Audio backend:");
+                            egui::ComboBox::from_id_salt("audio_backend_selector")
+                                .selected_text(
+                                    selected_audio_backend
+                                        .map(|backend| backend.name())
+                                        .unwrap_or("Custom output"),
+                                )
+                                .width(240.0)
+                                .show_ui(ui, |ui| {
+                                    for &backend in &self.audio_backends {
+                                        ui.selectable_value(
+                                            &mut selected_audio_backend,
+                                            Some(backend),
+                                            backend.name(),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+
+                    if selected_song != self.selected_song {
+                        self.select_song(selected_song);
+                    }
+
+                    if selected_audio_backend != self.nyaa.audio_backend() {
+                        if let Some(audio_backend) = selected_audio_backend {
+                            self.select_audio_backend(audio_backend);
+                        }
+                    }
+
+                    self.show_waveform(ui);
+
+                    let tab_width = 90.0;
+                    let tab_height = ui.spacing().interact_size.y;
+                    let gap = ui.spacing().item_spacing.x;
+                    let tabs_width = tab_width * 2.0 + gap;
+
+                    ui.horizontal(|ui| {
+                        let offset = ((ui.available_width() - tabs_width) / 2.0).max(0.0);
+                        ui.add_space(offset);
+
+                        if ui
+                            .add_sized(
+                                [tab_width, tab_height],
+                                egui::Button::selectable(
+                                    self.audio_mode == AudioMode::StaticBytes,
+                                    "Static bytes",
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.audio_mode = AudioMode::StaticBytes;
+                        }
+
+                        if ui
+                            .add_sized(
+                                [tab_width, tab_height],
+                                egui::Button::selectable(
+                                    self.audio_mode == AudioMode::File,
+                                    "File",
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.audio_mode = AudioMode::File;
+                        }
+                    });
+
+                    let control_width = ui.available_width().min(360.0);
+
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 0.0),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            ui.set_width(control_width);
+
+                            ui.spacing_mut().slider_width = control_width;
+
+                            let mut position_secs: f64 = self.nyaa.clamped_position().as_secs_f64();
+                            let response = ui.add(
+                                egui::Slider::new(&mut position_secs, self.nyaa.seek_range())
+                                    .show_value(false),
+                            );
+
+                            if response.drag_started() {
+                                self.nyaa.pause();
+                            }
+
+                            if response.changed() {
+                                if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
+                                    log::error!("could not seek audio: {error}");
+                                }
+                            }
+
+                            if response.drag_stopped() {
+                                self.nyaa.resume();
+                            }
+
+                            let is_loading = self.nyaa.is_loading();
+                            let button_size = ui.spacing().interact_size;
+
+                            let (row_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(control_width, button_size.y),
+                                egui::Sense::hover(),
+                            );
+
+                            let button_rect =
+                                egui::Rect::from_center_size(row_rect.center(), button_size);
+
+                            let left_rect = egui::Rect::from_min_max(
+                                row_rect.min,
+                                egui::pos2(button_rect.left(), row_rect.bottom()),
+                            );
+
+                            let mut left_ui = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .id_salt("position_control")
+                                    .max_rect(left_rect)
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            );
+
+                            let response = left_ui.add(
+                                egui::DragValue::new(&mut position_secs)
+                                    .range(self.nyaa.seek_range())
+                                    .custom_formatter(|position, _| format_timestamp_secs(position))
+                                    .custom_parser(|input| parse_timestamp(input).map(f64::from)),
+                            );
+
+                            if response.changed() {
+                                if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
+                                    log::error!("could not seek audio: {error}");
+                                }
+                            }
+
+                            let mut button_builder = egui::UiBuilder::new()
+                                .id_salt("play_button")
+                                .max_rect(button_rect)
+                                .layout(egui::Layout::centered_and_justified(
+                                    egui::Direction::TopDown,
+                                ));
+
+                            if is_loading {
+                                button_builder = button_builder.disabled();
+                            }
+
+                            let mut button_ui = ui.new_child(button_builder);
+
+                            let button =
+                                button_ui
+                                    .add(egui::Button::new(""))
+                                    .on_hover_text(if is_loading {
+                                        "Loading"
+                                    } else if self.nyaa.is_playing() {
+                                        "Stop"
+                                    } else {
+                                        "Play"
+                                    });
+
+                            let center = button.rect.center();
+                            let icon_color = button_ui.style().interact(&button).fg_stroke.color;
+
+                            if is_loading {
+                                button_ui.painter().text(
+                                    center,
+                                    egui::Align2::CENTER_CENTER,
+                                    "...",
+                                    egui::TextStyle::Button.resolve(button_ui.style()),
+                                    icon_color,
+                                );
+                            } else if self.nyaa.is_playing() {
+                                let size = 8.0;
+                                button_ui.painter().rect_filled(
+                                    egui::Rect::from_center_size(center, egui::vec2(size, size)),
+                                    0.0,
+                                    icon_color,
+                                );
+                            } else {
+                                let half_h = 6.0;
+                                let half_w = 5.0;
+
+                                button_ui.painter().add(egui::Shape::convex_polygon(
+                                    vec![
+                                        egui::pos2(center.x - half_w, center.y - half_h),
+                                        egui::pos2(center.x - half_w, center.y + half_h),
+                                        egui::pos2(center.x + half_w, center.y),
+                                    ],
+                                    icon_color,
+                                    egui::Stroke::NONE,
+                                ));
+                            }
+
+                            if button.clicked() {
+                                if self.nyaa.is_playing() {
+                                    self.stop();
+                                } else {
+                                    self.play();
+                                }
+                            }
+
+                            ui.painter().text(
+                                egui::pos2(row_rect.right(), row_rect.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                self.nyaa.duration_formatted(),
+                                egui::TextStyle::Body.resolve(ui.style()),
+                                ui.visuals().text_color(),
+                            );
+
+                            ui.add_space(30.0);
+
+                            ui.columns(2, |columns| {
+                                let mut speed = self.nyaa.speed();
+                                let speed_width = columns[0].available_width();
+                                columns[0].label(format!("Speed: {speed:.2}x"));
+                                columns[0].spacing_mut().slider_width = speed_width;
+
+                                let response = columns[0].add(
+                                    egui::Slider::new(&mut speed, 0.5..=2.0)
+                                        .show_value(false)
+                                        .logarithmic(true),
+                                );
+
+                                if response.changed() {
+                                    self.nyaa.set_speed(speed);
+                                }
+
+                                let mut volume = self.nyaa.volume() * 100.0;
+                                let volume_width = columns[1].available_width();
+                                columns[1].label(format!("Volume: {volume:.0}%"));
+                                columns[1].spacing_mut().slider_width = volume_width;
+
+                                let response = columns[1].add(
+                                    egui::Slider::new(&mut volume, 0.0..=100.0).show_value(false),
+                                );
+
+                                if response.changed() {
+                                    self.nyaa.set_volume(volume / 100.0);
+                                }
+                            });
+                        },
+                    );
+
+                    ui.add_space(16.0);
+                    self.show_effects(ui);
+                });
             });
         });
     }

@@ -3,7 +3,7 @@ use dasp_sample::FromSample;
 use js_sys::Uint8Array;
 use rodio::cpal::traits::HostTrait;
 use rodio::decoder::DecoderError;
-use rodio::source::SeekError;
+use rodio::source::{AutomaticGainControlSettings, LimitSettings, SeekError};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
@@ -39,6 +39,10 @@ pub enum NyaaError {
     /// Occurs when `try_seek` fails because the underlying decoder has an error or does not support seeking.
     #[error("failed to seek audio: {0}")]
     Seek(#[source] SeekError),
+
+    /// An audio effect setting is outside its supported range.
+    #[error("invalid audio effect setting: {0}")]
+    InvalidEffect(&'static str),
 
     /// Errors that might occur when loading an audio asset in a browser.
     #[cfg(target_arch = "wasm32")]
@@ -321,6 +325,264 @@ impl AudioOutput {
     }
 }
 
+/// Settings for a rodio low-pass or high-pass filter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterEffect {
+    /// The filter cutoff frequency in hertz.
+    pub frequency: u32,
+    /// The filter resonance or bandwidth.
+    pub q: f32,
+}
+
+impl Default for FilterEffect {
+    fn default() -> Self {
+        Self {
+            frequency: 1_000,
+            q: 0.5,
+        }
+    }
+}
+
+/// Settings for rodio's reverb effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReverbEffect {
+    /// The delay before the reflected signal.
+    pub delay: Duration,
+    /// The amplitude of the reflected signal.
+    pub amplitude: f32,
+}
+
+impl Default for ReverbEffect {
+    fn default() -> Self {
+        Self {
+            delay: Duration::from_millis(120),
+            amplitude: 0.35,
+        }
+    }
+}
+
+/// Settings for rodio's distortion effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DistortionEffect {
+    /// The gain applied before clipping.
+    pub gain: f32,
+    /// The absolute clipping threshold.
+    pub threshold: f32,
+}
+
+impl Default for DistortionEffect {
+    fn default() -> Self {
+        Self {
+            gain: 2.0,
+            threshold: 0.8,
+        }
+    }
+}
+
+/// Settings for rodio's automatic gain control effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutomaticGainEffect {
+    /// The output level the effect tries to maintain.
+    pub target_level: f32,
+    /// How quickly the effect increases gain.
+    pub attack: Duration,
+    /// How quickly the effect reduces gain.
+    pub release: Duration,
+    /// The maximum gain the effect may apply.
+    pub maximum_gain: f32,
+}
+
+impl Default for AutomaticGainEffect {
+    fn default() -> Self {
+        Self {
+            target_level: 1.0,
+            attack: Duration::from_secs(4),
+            release: Duration::ZERO,
+            maximum_gain: 7.0,
+        }
+    }
+}
+
+/// Settings for rodio's limiter effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LimiterEffect {
+    /// The negative dBFS level where limiting begins.
+    pub threshold_db: f32,
+    /// The width of the transition into limiting, in decibels.
+    pub knee_width_db: f32,
+    /// How quickly the limiter responds to peaks.
+    pub attack: Duration,
+    /// How quickly the limiter recovers after a peak.
+    pub release: Duration,
+}
+
+impl Default for LimiterEffect {
+    fn default() -> Self {
+        Self {
+            threshold_db: -1.0,
+            knee_width_db: 4.0,
+            attack: Duration::from_millis(5),
+            release: Duration::from_millis(100),
+        }
+    }
+}
+
+/// Post-processing effects applied to newly played audio.
+///
+/// Optional effects are disabled by default. Calling [`Nyaa::set_effects`] while audio is
+/// active rebuilds its decoder at the current position so the new chain takes effect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AudioEffects {
+    /// Linear gain applied before the other effects.
+    pub input_gain: f32,
+    /// Duration of the fade from silence when a source starts.
+    pub fade_in: Duration,
+    /// Optional high-pass filter settings.
+    pub high_pass: Option<FilterEffect>,
+    /// Optional low-pass filter settings.
+    pub low_pass: Option<FilterEffect>,
+    /// Optional distortion settings.
+    pub distortion: Option<DistortionEffect>,
+    /// Optional automatic gain control settings.
+    pub automatic_gain: Option<AutomaticGainEffect>,
+    /// Optional reverb settings.
+    pub reverb: Option<ReverbEffect>,
+    /// Optional limiter settings, applied last.
+    pub limiter: Option<LimiterEffect>,
+}
+
+impl Default for AudioEffects {
+    fn default() -> Self {
+        Self {
+            input_gain: 1.0,
+            fade_in: Duration::ZERO,
+            high_pass: None,
+            low_pass: None,
+            distortion: None,
+            automatic_gain: None,
+            reverb: None,
+            limiter: None,
+        }
+    }
+}
+
+impl AudioEffects {
+    fn validate(&self) -> Result<(), NyaaError> {
+        if !self.input_gain.is_finite() || self.input_gain < 0.0 {
+            return Err(NyaaError::InvalidEffect(
+                "input gain must be finite and non-negative",
+            ));
+        }
+
+        for filter in [self.high_pass, self.low_pass].into_iter().flatten() {
+            if filter.frequency == 0 {
+                return Err(NyaaError::InvalidEffect(
+                    "filter frequency must be greater than zero",
+                ));
+            }
+            if !filter.q.is_finite() || filter.q <= 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "filter Q must be finite and greater than zero",
+                ));
+            }
+        }
+
+        if let Some(effect) = self.distortion {
+            if !effect.gain.is_finite() || effect.gain < 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "distortion gain must be finite and non-negative",
+                ));
+            }
+            if !effect.threshold.is_finite() || effect.threshold <= 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "distortion threshold must be finite and greater than zero",
+                ));
+            }
+        }
+
+        if let Some(effect) = self.automatic_gain {
+            if !effect.target_level.is_finite() || effect.target_level <= 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "automatic gain target must be finite and greater than zero",
+                ));
+            }
+            if !effect.maximum_gain.is_finite() || effect.maximum_gain <= 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "automatic maximum gain must be finite and greater than zero",
+                ));
+            }
+        }
+
+        if let Some(effect) = self.reverb {
+            if !effect.amplitude.is_finite() || effect.amplitude < 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "reverb amplitude must be finite and non-negative",
+                ));
+            }
+        }
+
+        if let Some(effect) = self.limiter {
+            if !effect.threshold_db.is_finite() || effect.threshold_db >= 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "limiter threshold must be finite and below zero dBFS",
+                ));
+            }
+            if !effect.knee_width_db.is_finite() || effect.knee_width_db < 0.0 {
+                return Err(NyaaError::InvalidEffect(
+                    "limiter knee width must be finite and non-negative",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply<S>(&self, source: S) -> Box<dyn Source<Item = f32> + Send>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
+        let mut source: Box<dyn Source<Item = f32> + Send> = Box::new(source);
+
+        if self.input_gain != 1.0 {
+            source = Box::new(source.amplify(self.input_gain));
+        }
+        if let Some(effect) = self.high_pass {
+            source = Box::new(source.high_pass_with_q(effect.frequency, effect.q));
+        }
+        if let Some(effect) = self.low_pass {
+            source = Box::new(source.low_pass_with_q(effect.frequency, effect.q));
+        }
+        if let Some(effect) = self.distortion {
+            source = Box::new(source.distortion(effect.gain, effect.threshold));
+        }
+        if let Some(effect) = self.automatic_gain {
+            source = Box::new(source.automatic_gain_control(AutomaticGainControlSettings {
+                target_level: effect.target_level,
+                attack_time: effect.attack,
+                release_time: effect.release,
+                absolute_max_gain: effect.maximum_gain,
+            }));
+        }
+        if let Some(effect) = self.reverb {
+            source = Box::new(source.buffered().reverb(effect.delay, effect.amplitude));
+        }
+        if let Some(effect) = self.limiter {
+            source = Box::new(source.limit(LimitSettings {
+                threshold: effect.threshold_db,
+                knee_width: effect.knee_width_db,
+                attack: effect.attack,
+                release: effect.release,
+            }));
+        }
+        if !self.fade_in.is_zero() {
+            source = Box::new(source.fade_in(self.fade_in));
+        }
+
+        source
+    }
+}
+
 /// rodisnyaa: Painless audio playback for native and web platforms.
 ///
 /// If you are only playing one audio track at a time, you can use [`Nyaa`] directly.
@@ -344,6 +606,10 @@ pub struct Nyaa {
     /// The bytes of the current source, if it was played from a `'static` lifetime.
     current_static_bytes: Option<&'static [u8]>,
 
+    /// The path of the current source, if it was played from a file.
+    #[cfg(not(target_arch = "wasm32"))]
+    current_file_path: Option<PathBuf>,
+
     /// The offset of the current position in the source.
     ///
     /// You should probably use [`Nyaa::position()`] instead.
@@ -357,6 +623,9 @@ pub struct Nyaa {
 
     /// The volume applied to the player.
     volume: Mutex<f32>,
+
+    /// The post-processing effects applied to playback sources.
+    effects: AudioEffects,
 
     /// Whether the offset is the complete position while no source is actively playing.
     position_is_held: bool,
@@ -391,10 +660,13 @@ impl Nyaa {
             duration: Mutex::new(None),
             current_shared_bytes: None,
             current_static_bytes: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            current_file_path: None,
             position_offset: Duration::ZERO,
             player_position_anchor: Duration::ZERO,
             speed: 1.0,
             volume: Mutex::new(1.0),
+            effects: AudioEffects::default(),
             position_is_held: true,
             #[cfg(target_arch = "wasm32")]
             pending_playback: None,
@@ -507,6 +779,7 @@ impl Nyaa {
         }
 
         let duration = source.total_duration();
+        let source = self.effects.apply(source);
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
@@ -528,6 +801,10 @@ impl Nyaa {
         self.player = Some(new_player);
         self.current_shared_bytes = None;
         self.current_static_bytes = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_file_path = None;
+        }
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = false;
@@ -557,6 +834,10 @@ impl Nyaa {
 
         self.current_shared_bytes = None;
         self.current_static_bytes = Some(bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_file_path = None;
+        }
         self.position_offset = Duration::ZERO;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
@@ -578,19 +859,20 @@ impl Nyaa {
     /// Plays an audio asset using its native path.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
-        let source = Self::decoder_from_file(path)?;
+        let path = path.as_ref().to_path_buf();
+        let source = Self::decoder_from_file(&path)?;
 
-        self.play_source(source)
+        self.play_source(source)?;
+        self.current_file_path = Some(path);
+
+        Ok(())
     }
 
     /// Plays an audio asset using its native path or browser URL.
     pub async fn play_asset(&mut self, asset: &AudioAsset) -> Result<(), NyaaError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let file = File::open(asset.native_path()).map_err(NyaaError::File)?;
-            let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
-
-            self.play_source(source)
+            self.play_file(asset.native_path())
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -740,13 +1022,19 @@ impl Nyaa {
             None => position,
         };
 
-        if let Some(bytes) = self.current_shared_bytes.as_ref() {
-            let source = Self::decoder_from_shared_bytes(bytes.clone())?;
+        if let Some(bytes) = self.current_shared_bytes.clone() {
+            let source = Self::decoder_from_shared_bytes(bytes)?;
             return self.seek_with_decode_source(source, position);
         }
 
         if let Some(bytes) = self.current_static_bytes {
             let source = Self::decoder_from_static_bytes(bytes)?;
+            return self.seek_with_decode_source(source, position);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = self.current_file_path.clone() {
+            let source = Self::decoder_from_file(path)?;
             return self.seek_with_decode_source(source, position);
         }
 
@@ -800,6 +1088,7 @@ impl Nyaa {
         // therefore this seek executes directly on this thread.
 
         source.try_seek(position).map_err(NyaaError::Seek)?;
+        let source = self.effects.apply(source);
 
         let was_paused = player.is_paused();
         let volume = self.volume();
@@ -830,6 +1119,38 @@ impl Nyaa {
         self.position_is_held = false;
 
         Ok(())
+    }
+
+    /// Returns the current rodio post-processing settings.
+    pub fn effects(&self) -> AudioEffects {
+        self.effects
+    }
+
+    /// Replaces the rodio post-processing chain.
+    ///
+    /// If a source is playing, its decoder is rebuilt at the current position and keeps its
+    /// paused state. Loaded or stopped sources use the settings the next time playback starts.
+    pub fn set_effects(&mut self, effects: AudioEffects) -> Result<(), NyaaError> {
+        effects.validate()?;
+
+        if effects == self.effects {
+            return Ok(());
+        }
+
+        if self.is_empty() {
+            self.effects = effects;
+            return Ok(());
+        }
+
+        let position = self.position();
+        let previous_effects = std::mem::replace(&mut self.effects, effects);
+        let result = self.try_seek_with_decode(position);
+
+        if result.is_err() {
+            self.effects = previous_effects;
+        }
+
+        result
     }
 
     /// Returns the duration of an audio asset using its native path or browser URL.
@@ -967,6 +1288,10 @@ impl Nyaa {
 
         self.current_shared_bytes = None;
         self.current_static_bytes = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_file_path = None;
+        }
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
