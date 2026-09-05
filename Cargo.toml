@@ -15,22 +15,23 @@ harness = false
 
 [dependencies]
 dasp_sample = "0.11"
-rodio = { version = "0.22", features = [
-    "mp3",
+rodio = { version = "0.22", default-features = false, features = [
     "playback",
-    "vorbis",
     "wasm-bindgen",
-    "wav",
 ] }
 log = "0.4"
 parking_lot_core = { version = "0.9", optional = true }
-symphonia = "0.6"
 thiserror = "2"
 web-time = "1"
 
 [features]
-default = ["nightly"]
+default = ["mp3", "nightly"]
+flac = ["rodio/flac"]
+mp3 = ["rodio/mp3"]
+mp4 = ["rodio/mp4"]
 nightly = ["cpal/audioworklet", "parking_lot_core/nightly"]
+vorbis = ["rodio/vorbis"]
+wav = ["rodio/wav"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { version = "0.17", features = ["wasm-bindgen"] }
