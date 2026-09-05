@@ -4,6 +4,352 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>this is an app</title>
+        <script>
+            (function () {
+                var status = (window.__audioApiStatus =
+                    window.__audioApiStatus || {
+                        audioContexts: [],
+                        bufferSources: 0,
+                        buffers: 0,
+                        scriptProcessors: 0,
+                        workletModules: [],
+                        workletNodes: [],
+                        cpalWorkletModule: false,
+                        cpalWorkletNode: false,
+                    });
+                var lastSignature = "";
+
+                function trackContext(ctx) {
+                    try {
+                        if (status.audioContexts.indexOf(ctx) === -1) {
+                            status.audioContexts.push(ctx);
+                        }
+                        if (typeof ctx.addEventListener === "function") {
+                            ctx.addEventListener("statechange", scheduleRender);
+                        }
+                    } catch (e) {}
+                    scheduleRender();
+                    return ctx;
+                }
+
+                function wrapAudioContext(globalName) {
+                    try {
+                        var Original = window[globalName];
+                        if (
+                            typeof Original !== "function" ||
+                            Original.__rodisnyaaPatched
+                        )
+                            return;
+                        function Patched() {
+                            var args = Array.prototype.slice.call(arguments);
+                            var ctx = new (Function.prototype.bind.apply(
+                                Original,
+                                [null].concat(args),
+                            ))();
+                            return trackContext(ctx);
+                        }
+                        Patched.__rodisnyaaPatched = true;
+                        Patched.prototype = Original.prototype;
+                        Object.setPrototypeOf(Patched, Original);
+                        window[globalName] = Patched;
+                    } catch (e) {}
+                }
+
+                function patchContextProto(globalName) {
+                    try {
+                        var proto =
+                            window[globalName] && window[globalName].prototype;
+                        if (!proto || proto.__rodisnyaaPatched) return;
+                        proto.__rodisnyaaPatched = true;
+
+                        if (typeof proto.createBufferSource === "function") {
+                            var origSource = proto.createBufferSource;
+                            proto.createBufferSource = function () {
+                                status.bufferSources++;
+                                var node = origSource.apply(this, arguments);
+                                scheduleRender();
+                                return node;
+                            };
+                        }
+                        if (typeof proto.createBuffer === "function") {
+                            var origBuffer = proto.createBuffer;
+                            proto.createBuffer = function () {
+                                status.buffers++;
+                                var buffer = origBuffer.apply(this, arguments);
+                                scheduleRender();
+                                return buffer;
+                            };
+                        }
+                        [
+                            "createScriptProcessor",
+                            "createJavaScriptNode",
+                        ].forEach(function (name) {
+                            if (typeof proto[name] === "function") {
+                                var orig = proto[name];
+                                proto[name] = function () {
+                                    status.scriptProcessors++;
+                                    var node = orig.apply(this, arguments);
+                                    scheduleRender();
+                                    return node;
+                                };
+                            }
+                        });
+                    } catch (e) {}
+                }
+
+                function recordWorkletModule(url) {
+                    try {
+                        var href = String(url);
+                        if (status.workletModules.indexOf(href) === -1) {
+                            status.workletModules.push(href);
+                        }
+                        // cpal's audioworklet backend serves worklet.js (which
+                        // registers "CpalProcessor") from a blob URL, so peek
+                        // at the source to confirm it is really cpal's module.
+                        if (typeof fetch === "function") {
+                            fetch(href)
+                                .then(function (res) {
+                                    return res.text();
+                                })
+                                .then(function (text) {
+                                    if (text.indexOf("CpalProcessor") !== -1) {
+                                        status.cpalWorkletModule = true;
+                                        scheduleRender();
+                                    }
+                                })
+                                .catch(function () {});
+                        }
+                    } catch (e) {}
+                    scheduleRender();
+                }
+
+                function recordWorkletNode(name) {
+                    try {
+                        var label = String(name);
+                        if (status.workletNodes.indexOf(label) === -1) {
+                            status.workletNodes.push(label);
+                        }
+                        if (label === "CpalProcessor") {
+                            status.cpalWorkletNode = true;
+                        }
+                    } catch (e) {}
+                    scheduleRender();
+                }
+
+                // Patch before any AudioContext exists so later prototype
+                // lookups still hit the same (patched) prototype object.
+                patchContextProto("AudioContext");
+                patchContextProto("webkitAudioContext");
+                wrapAudioContext("AudioContext");
+                wrapAudioContext("webkitAudioContext");
+
+                try {
+                    if (
+                        window.AudioWorklet &&
+                        window.AudioWorklet.prototype &&
+                        typeof window.AudioWorklet.prototype.addModule ===
+                            "function" &&
+                        !window.AudioWorklet.prototype.__rodisnyaaPatched
+                    ) {
+                        window.AudioWorklet.prototype.__rodisnyaaPatched = true;
+                        var origAddModule =
+                            window.AudioWorklet.prototype.addModule;
+                        window.AudioWorklet.prototype.addModule = function (
+                            moduleURL,
+                        ) {
+                            recordWorkletModule(moduleURL);
+                            return origAddModule.apply(this, arguments);
+                        };
+                    }
+                } catch (e) {}
+
+                try {
+                    if (
+                        typeof window.AudioWorkletNode === "function" &&
+                        !window.AudioWorkletNode.__rodisnyaaPatched
+                    ) {
+                        var OrigNode = window.AudioWorkletNode;
+                        function PatchedNode(context, name) {
+                            recordWorkletNode(name);
+                            var args = Array.prototype.slice.call(arguments);
+                            return new (Function.prototype.bind.apply(
+                                OrigNode,
+                                [null].concat(args),
+                            ))();
+                        }
+                        PatchedNode.__rodisnyaaPatched = true;
+                        PatchedNode.prototype = OrigNode.prototype;
+                        Object.setPrototypeOf(PatchedNode, OrigNode);
+                        window.AudioWorkletNode = PatchedNode;
+                    }
+                } catch (e) {}
+
+                function setPill(dotId, textId, color, text) {
+                    var dot = document.getElementById(dotId);
+                    var textEl = document.getElementById(textId);
+                    if (!dot || !textEl) return;
+                    dot.style.background = color;
+                    dot.style.boxShadow = "0 0 6px " + color;
+                    textEl.textContent = text;
+                }
+
+                function render() {
+                    var webaudioDot = document.getElementById("webaudio-dot");
+                    if (!webaudioDot) return; // body not parsed yet; interval retries
+
+                    var hasAudioContext =
+                        typeof window.AudioContext === "function" ||
+                        typeof window.webkitAudioContext === "function";
+                    var liveContexts = [];
+                    status.audioContexts = status.audioContexts.filter(
+                        function (ctx) {
+                            try {
+                                if (ctx && ctx.state !== "closed") {
+                                    liveContexts.push(
+                                        ctx.state + "@" + ctx.sampleRate + "Hz",
+                                    );
+                                    return true;
+                                }
+                                return false;
+                            } catch (e) {
+                                return true;
+                            }
+                        },
+                    );
+                    var running = liveContexts.filter(function (s) {
+                        return s.indexOf("running") === 0;
+                    }).length;
+
+                    if (!hasAudioContext) {
+                        setPill(
+                            "webaudio-dot",
+                            "webaudio-text",
+                            "#ef4444",
+                            "unsupported",
+                        );
+                    } else if (status.audioContexts.length === 0) {
+                        setPill(
+                            "webaudio-dot",
+                            "webaudio-text",
+                            "#6b7280",
+                            "idle",
+                        );
+                    } else {
+                        var ctx = status.audioContexts[0];
+                        var rate =
+                            ctx && ctx.sampleRate
+                                ? " · " + ctx.sampleRate + "Hz"
+                                : "";
+                        var src =
+                            status.bufferSources > 0
+                                ? " · " + status.bufferSources + " src"
+                                : " · no src yet";
+                        var label =
+                            (running > 0 ? "running" : "suspended") +
+                            " · " +
+                            status.audioContexts.length +
+                            " ctx" +
+                            rate +
+                            src;
+                        setPill(
+                            "webaudio-dot",
+                            "webaudio-text",
+                            running > 0 ? "#22c55e" : "#eab308",
+                            label,
+                        );
+                    }
+
+                    var hasWorklet =
+                        typeof window.AudioWorkletNode === "function" &&
+                        !!(
+                            window.AudioWorklet &&
+                            window.AudioWorklet.prototype &&
+                            window.AudioWorklet.prototype.addModule
+                        );
+                    if (!hasWorklet) {
+                        setPill(
+                            "worklet-dot",
+                            "worklet-text",
+                            "#ef4444",
+                            "unsupported",
+                        );
+                    } else if (!window.crossOriginIsolated) {
+                        setPill(
+                            "worklet-dot",
+                            "worklet-text",
+                            "#f97316",
+                            "blocked",
+                        );
+                    } else if (status.cpalWorkletNode) {
+                        setPill(
+                            "worklet-dot",
+                            "worklet-text",
+                            "#22c55e",
+                            "IN USE",
+                        );
+                    } else if (status.cpalWorkletModule) {
+                        setPill(
+                            "worklet-dot",
+                            "worklet-text",
+                            "#eab308",
+                            "no node yet",
+                        );
+                    } else if (
+                        status.workletNodes.length > 0 ||
+                        status.workletModules.length > 0
+                    ) {
+                        setPill(
+                            "worklet-dot",
+                            "worklet-text",
+                            "#22c55e",
+                            "in use (other)",
+                        );
+                    } else {
+                        setPill(
+                            "worklet-dot",
+                            "worklet-text",
+                            "#6b7280",
+                            "idle",
+                        );
+                    }
+
+                    var signature = [
+                        document.getElementById("webaudio-text").textContent,
+                        document.getElementById("worklet-text").textContent,
+                    ].join("|");
+                    if (signature !== lastSignature) {
+                        lastSignature = signature;
+                        try {
+                            console.info(
+                                "[audio-api] WebAudio: " +
+                                    document.getElementById("webaudio-text")
+                                        .textContent +
+                                    " (" +
+                                    liveContexts.join(", ") +
+                                    ") | AudioWorklet: " +
+                                    document.getElementById("worklet-text")
+                                        .textContent,
+                            );
+                        } catch (e) {}
+                    }
+                }
+
+                function scheduleRender() {
+                    try {
+                        render();
+                    } catch (e) {}
+                }
+
+                try {
+                    setInterval(render, 500);
+                    if (document.readyState === "loading") {
+                        document.addEventListener("DOMContentLoaded", render);
+                    } else {
+                        render();
+                    }
+                } catch (e) {}
+            })();
+        </script>
         <link data-trunk rel="rust" data-bin="app" />
         <link data-trunk rel="copy-file" href="../ATLAS 270 [WHAT NO].wav" />
         <link data-trunk rel="copy-file" href="../polar 240 yay.mp3" />
@@ -21,9 +367,53 @@
                 width: 100vw;
                 height: 100vh;
             }
+            #audio-api-indicator {
+                position: fixed;
+                bottom: 8px;
+                right: 8px;
+                z-index: 9999;
+                display: flex;
+                gap: 6px;
+                font:
+                    12px/1.4 ui-monospace,
+                    SFMono-Regular,
+                    Menlo,
+                    monospace;
+                pointer-events: none;
+            }
+            #audio-api-indicator .pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 3px 9px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 999px;
+                background: rgba(10, 12, 16, 0.82);
+                color: #e5e7eb;
+                white-space: nowrap;
+            }
+            #audio-api-indicator .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: #6b7280;
+                flex: none;
+            }
         </style>
     </head>
     <body>
+        <div id="audio-api-indicator">
+            <span class="pill"
+                ><span class="dot" id="webaudio-dot"></span>WebAudio:&nbsp;<span
+                    id="webaudio-text"
+                    >…</span
+                ></span
+            >
+            <span class="pill"
+                ><span class="dot" id="worklet-dot"></span
+                >AudioWorklet:&nbsp;<span id="worklet-text">…</span></span
+            >
+        </div>
         <canvas id="the_canvas_id"></canvas>
     </body>
 </html>
