@@ -35,7 +35,7 @@ depends = ["test:native", "test:wasm"]
 run = "cargo test -- --nocapture"
 
 [tasks."test:wasm"]
-run = "wasm-pack test --headless --chrome . -- --nocapture"
+run = "wasm-pack test --headless --chrome -- --lib --test '*' -- --nocapture"
 
 [tasks."bench:native"]
 run = "cargo bench --bench controls"
