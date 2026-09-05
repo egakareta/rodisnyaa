@@ -1,3 +1,4 @@
+use crate::wsola::Wsola;
 use dasp_sample::FromSample;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Uint8Array;
@@ -1184,6 +1185,9 @@ pub struct Nyaa {
     /// You should probably use [`Nyaa::speed()`] instead.
     speed: f32,
 
+    /// Whether playback speed changes preserve the source pitch.
+    preserve_pitch: bool,
+
     /// The volume applied to the player.
     ///
     /// You should probably use [`Nyaa::volume()`] instead.
@@ -1255,6 +1259,7 @@ impl Nyaa {
             position_offset: Duration::ZERO,
             player_position_anchor: Duration::ZERO,
             speed: 1.0,
+            preserve_pitch: false,
             volume: Mutex::new(1.0),
             effects: AudioEffects::default(),
             looping: Arc::new(AtomicBool::new(false)),
@@ -1447,7 +1452,7 @@ impl Nyaa {
             position,
             self.looping.clone(),
         );
-        let source = self.effects.apply(source);
+        let source = self.process_source(source);
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
@@ -1464,7 +1469,7 @@ impl Nyaa {
         let volume = self.volume();
 
         new_player.set_volume(volume);
-        new_player.set_speed(self.speed);
+        new_player.set_speed(self.player_speed());
         new_player.append(source);
         new_player.play();
 
@@ -1526,6 +1531,33 @@ impl Nyaa {
         }
 
         Ok((range.start, Some(end)))
+    }
+
+    fn process_source<S>(&self, source: S) -> Box<dyn Source<Item = f32> + Send>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
+        let source = self.effects.apply(source);
+
+        if self.preserve_pitch {
+            Box::new(Wsola::new(source, self.speed))
+        } else {
+            source
+        }
+    }
+
+    fn player_speed(&self) -> f32 {
+        if self.preserve_pitch { 1.0 } else { self.speed }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn player_position_for_source_position(&self, position: Duration) -> Duration {
+        if self.preserve_pitch {
+            position.div_f32(self.speed)
+        } else {
+            position
+        }
     }
 
     /// Plays bytes stored in an [`Arc`], which allows multiple players to share the same
@@ -1758,12 +1790,13 @@ impl Nyaa {
         {
             match self.player.as_ref() {
                 Some(player) => {
+                    let player_position = self.player_position_for_source_position(position);
                     player
-                        .try_seek(position)
+                        .try_seek(player_position)
                         .map_err(NyaaError::Seek)
                         .map_err(|error| self.record_failure(error))?;
                     self.position_offset = position;
-                    self.player_position_anchor = position;
+                    self.player_position_anchor = player_position;
                     self.position_is_held = false;
 
                     Ok(())
@@ -1831,7 +1864,7 @@ impl Nyaa {
 
         if let Some(new_player) = self.audio_output.connect_player() {
             new_player.set_volume(volume);
-            new_player.set_speed(self.speed);
+            new_player.set_speed(self.player_speed());
 
             if was_paused {
                 new_player.pause();
@@ -1880,7 +1913,7 @@ impl Nyaa {
             position,
             self.looping.clone(),
         );
-        let source = self.effects.apply(source);
+        let source = self.process_source(source);
 
         let was_paused = player.is_paused();
         let volume = self.volume();
@@ -1891,7 +1924,7 @@ impl Nyaa {
             .expect("an initialized audio output must accept players");
 
         new_player.set_volume(volume);
-        new_player.set_speed(self.speed);
+        new_player.set_speed(self.player_speed());
 
         if was_paused {
             new_player.pause();
@@ -2136,11 +2169,31 @@ impl Nyaa {
         *self.volume.lock().unwrap()
     }
 
-    /// Changes the playback speed and pitch of the sound.
+    /// Changes the playback speed of the sound.
     ///
     /// A value of `1.0` uses the original speed. For example, `0.5` plays at half speed and
-    /// `2.0` plays at double speed. Pitch changes by the same factor.
+    /// `2.0` plays at double speed. Pitch changes by the same factor unless
+    /// [`Nyaa::set_preserve_pitch`] is enabled.
     pub fn set_speed(&mut self, speed: f32) {
+        if let Err(error) = self.try_set_speed(speed) {
+            self.record_failure(error);
+        }
+    }
+
+    /// Changes playback speed and reports errors from rebuilding a pitch-preserving source.
+    pub fn try_set_speed(&mut self, speed: f32) -> Result<(), NyaaError> {
+        if self.preserve_pitch && self.speed != speed && !self.is_empty() {
+            let position = self.position();
+            let previous_speed = std::mem::replace(&mut self.speed, speed);
+            let result = self.try_seek_with_decode(position);
+
+            if result.is_err() {
+                self.speed = previous_speed;
+            }
+
+            return result;
+        }
+
         if !self.position_is_held {
             let player_position = self.player.as_ref().map_or(Duration::ZERO, Player::get_pos);
             self.position_offset = self.position_at_player_time(player_position);
@@ -2150,13 +2203,50 @@ impl Nyaa {
         self.speed = speed;
 
         if let Some(player) = self.player.as_ref() {
-            player.set_speed(speed);
+            player.set_speed(self.player_speed());
         }
+
+        Ok(())
     }
 
     /// Gets the playback speed of the sound.
     pub fn speed(&self) -> f32 {
         self.speed
+    }
+
+    /// Enables or disables pitch preservation for playback speed changes.
+    ///
+    /// Active playback is rebuilt at its current source position so the new mode takes effect
+    /// immediately while preserving whether playback is paused.
+    pub fn set_preserve_pitch(&mut self, preserve_pitch: bool) -> Result<(), NyaaError> {
+        if preserve_pitch == self.preserve_pitch {
+            return Ok(());
+        }
+
+        if self.is_empty() {
+            self.preserve_pitch = preserve_pitch;
+
+            if let Some(player) = self.player.as_ref() {
+                player.set_speed(self.player_speed());
+            }
+
+            return Ok(());
+        }
+
+        let position = self.position();
+        self.preserve_pitch = preserve_pitch;
+        let result = self.try_seek_with_decode(position);
+
+        if result.is_err() {
+            self.preserve_pitch = !preserve_pitch;
+        }
+
+        result
+    }
+
+    /// Returns whether playback speed changes preserve the source pitch.
+    pub fn preserves_pitch(&self) -> bool {
+        self.preserve_pitch
     }
 
     /// Enables or disables repeating at the configured playback boundary.

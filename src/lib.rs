@@ -7,6 +7,7 @@
 mod nyaa;
 pub mod patch;
 mod waveform;
+pub mod wsola;
 
 pub use nyaa::*;
 pub use waveform::*;

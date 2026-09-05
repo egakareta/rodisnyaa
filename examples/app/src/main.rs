@@ -1000,7 +1000,9 @@ impl eframe::App for App {
                                 );
 
                                 if response.changed() {
-                                    self.nyaa.set_speed(speed);
+                                    if let Err(error) = self.nyaa.try_set_speed(speed) {
+                                        log::error!("could not change playback speed: {error}");
+                                    }
                                 }
 
                                 let mut volume = self.nyaa.volume() * 100.0;
@@ -1019,14 +1021,29 @@ impl eframe::App for App {
 
                             ui.add_space(8.0);
 
-                            let mut looping = self.nyaa.is_looping();
-                            if ui
-                                .checkbox(&mut looping, "Loop")
-                                .on_hover_text("Repeat playback")
-                                .changed()
-                            {
-                                self.nyaa.set_looping(looping);
-                            }
+                            ui.horizontal(|ui| {
+                                let mut preserve_pitch = self.nyaa.preserves_pitch();
+                                if ui
+                                    .checkbox(&mut preserve_pitch, "Preserve pitch")
+                                    .on_hover_text("Use WSOLA for tempo changes")
+                                    .changed()
+                                {
+                                    if let Err(error) =
+                                        self.nyaa.set_preserve_pitch(preserve_pitch)
+                                    {
+                                        log::error!("could not change pitch preservation: {error}");
+                                    }
+                                }
+
+                                let mut looping = self.nyaa.is_looping();
+                                if ui
+                                    .checkbox(&mut looping, "Loop")
+                                    .on_hover_text("Repeat playback")
+                                    .changed()
+                                {
+                                    self.nyaa.set_looping(looping);
+                                }
+                            });
                         },
                     );
 
