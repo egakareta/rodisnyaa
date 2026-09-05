@@ -1,4 +1,4 @@
-# rodisnyaa
+# rodisnyaa 🐈
 
 Painless audio playback for native and web platforms.
 
