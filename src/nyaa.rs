@@ -124,6 +124,7 @@ fn browser_asset_error(error: impl std::fmt::Debug) -> NyaaError {
     NyaaError::BrowserAsset(format!("{error:?}"))
 }
 
+/// Fetches a web resource from the browser and returns its bytes.
 #[cfg(target_arch = "wasm32")]
 pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
     let window = web_sys::window()
@@ -327,6 +328,7 @@ impl Nyaa {
         self.audio_output.log_on_drop(log);
     }
 
+    /// Creates a [`Decoder`] from bytes stored in an [`Arc`], which allows multiple players to share the same audio data without copying it onto the heap.
     pub fn decoder_from_shared_bytes(
         bytes: Arc<[u8]>,
     ) -> Result<Decoder<Cursor<Arc<[u8]>>>, NyaaError> {
