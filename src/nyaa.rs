@@ -8,7 +8,7 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
-use std::io::{Cursor, Error};
+use std::io::{BufReader, Cursor, Error};
 use std::path::{Path, PathBuf};
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
@@ -351,6 +351,25 @@ impl Nyaa {
             .map_err(NyaaError::Decode)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn decoder_from_file(
+        path: impl AsRef<Path>,
+    ) -> Result<Decoder<BufReader<File>>, NyaaError> {
+        let path = path.as_ref();
+        let file = File::open(path).map_err(NyaaError::File)?;
+        let byte_len = file.metadata().map_err(NyaaError::File)?.len();
+        let mut builder = Decoder::builder()
+            .with_data(BufReader::new(file))
+            .with_byte_len(byte_len)
+            .with_coarse_seek(true);
+
+        if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+            builder = builder.with_hint(extension);
+        }
+
+        builder.build().map_err(NyaaError::Decode)
+    }
+
     /// Resumes playback of a paused player.
     ///
     /// No effect if not paused.
@@ -441,8 +460,7 @@ impl Nyaa {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
-        let file = File::open(path).map_err(NyaaError::File)?;
-        let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
+        let source = Self::decoder_from_file(path)?;
 
         self.play_source(source)
     }
