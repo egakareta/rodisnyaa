@@ -54,16 +54,16 @@ Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/
 
 ## Feature flags
 
-| Feature             | Enables              |
-| ------------------- | -------------------- |
-| `mp3` (default)     | MP3 decoding         |
-| `flac`              | FLAC decoding        |
-| `mp4`               | MP4 decoding         |
-| `vorbis`            | Vorbis decoding      |
-| `wav`               | WAV decoding         |
-| `asio`              | ASIO backend         |
-| `jack`              | JACK backend         |
-| `nightly` (default) | AudioWorklet backend |
+| Feature         | Enables              |
+| --------------- | -------------------- |
+| `mp3` (default) | MP3 decoding         |
+| `flac`          | FLAC decoding        |
+| `mp4`           | MP4 decoding         |
+| `vorbis`        | Vorbis decoding      |
+| `wav` (default) | WAV decoding         |
+| `asio`          | ASIO backend         |
+| `jack`          | JACK backend         |
+| `nightly`       | AudioWorklet backend |
 
 ## Motivation
 

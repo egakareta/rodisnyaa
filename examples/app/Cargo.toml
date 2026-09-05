@@ -10,7 +10,9 @@ log = "0.4"
 web-time = "1"
 
 [features]
+default = ["nightly"]
 asio = ["rodisnyaa/asio"]
+nightly = ["rodisnyaa/nightly"]
 jack = ["rodisnyaa/jack"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

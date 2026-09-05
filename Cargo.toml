@@ -26,7 +26,7 @@ thiserror = "2"
 web-time = "1"
 
 [features]
-default = ["mp3", "nightly", "wav"]
+default = ["mp3", "wav"]
 asio = ["cpal/asio"]
 flac = ["rodio/flac"]
 jack = ["cpal/jack"]
