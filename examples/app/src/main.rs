@@ -145,8 +145,6 @@ struct App {
     waveform: Option<WaveformBuilder>,
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
-    audio_backends: Vec<AudioBackend>,
-    audio_devices: Vec<AudioDevice>,
     selected_song: usize,
     audio_assets: Vec<AudioAsset>,
     effects: AudioEffects,
@@ -174,8 +172,6 @@ impl App {
             waveform,
             waveform_window: WaveformWindow::default(),
             audio_mode: AudioMode::StaticBytes,
-            audio_backends: AudioOutput::available_backends(),
-            audio_devices: AudioOutput::available_output_devices(),
             selected_song: DEFAULT_SONG_INDEX,
             audio_assets,
             effects: AudioEffects::default(),
@@ -218,8 +214,6 @@ impl App {
             return;
         }
 
-        self.audio_devices = AudioOutput::available_output_devices();
-
         let song = SONGS[self.selected_song];
 
         if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
@@ -227,18 +221,11 @@ impl App {
         }
     }
 
-    fn refresh_audio_devices(&mut self) {
-        self.audio_backends = AudioOutput::available_backends();
-        self.audio_devices = AudioOutput::available_output_devices();
-    }
-
     fn select_audio_device(&mut self, audio_device: &AudioDevice) {
         if let Err(error) = self.nyaa.switch_audio_device(audio_device) {
             log::error!("could not switch audio device: {error}");
             return;
         }
-
-        self.audio_devices = AudioOutput::available_output_devices();
 
         let song = SONGS[self.selected_song];
 
@@ -723,7 +710,6 @@ impl eframe::App for App {
                     let mut selected_song = self.selected_song;
                     let mut selected_audio_backend = self.nyaa.audio_backend();
                     let mut selected_audio_device = self.nyaa.audio_device();
-                    let mut refresh_devices = false;
 
                     ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
                         ui.horizontal(|ui| {
@@ -747,8 +733,8 @@ impl eframe::App for App {
                                         .unwrap_or("Custom output"),
                                 )
                                 .width(240.0)
-                                .show_ui(ui, |ui| {
-                                    for &backend in &self.audio_backends {
+                                .show_ui(ui, |ui: &mut egui::Ui| {
+                                    for &backend in &AudioOutput::available_backends() {
                                         ui.selectable_value(
                                             &mut selected_audio_backend,
                                             Some(backend),
@@ -768,11 +754,12 @@ impl eframe::App for App {
                                 .selected_text(selected_text)
                                 .width(240.0)
                                 .show_ui(ui, |ui| {
-                                    if self.audio_devices.is_empty() {
+                                    let audio_devices = AudioOutput::available_output_devices();
+                                    if audio_devices.is_empty() {
                                         ui.label("No output devices found");
                                     }
 
-                                    for device in &self.audio_devices {
+                                    for device in &audio_devices {
                                         ui.selectable_value(
                                             &mut selected_audio_device,
                                             Some(device.clone()),
@@ -786,14 +773,11 @@ impl eframe::App for App {
                                 .on_hover_text("Re-enumerate output devices")
                                 .clicked()
                             {
-                                refresh_devices = true;
+                                AudioOutput::refresh_available_backends();
+                                AudioOutput::refresh_available_output_devices();
                             }
                         });
                     });
-
-                    if refresh_devices {
-                        self.refresh_audio_devices();
-                    }
 
                     if selected_song != self.selected_song {
                         self.select_song(selected_song);

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use thiserror::Error;
 #[cfg(target_arch = "wasm32")]
@@ -387,6 +387,20 @@ impl Default for AudioOutput {
     }
 }
 
+/// Cached audio backends from the most recent enumeration.
+///
+/// Populated on the first [`AudioOutput::available_backends`] call and refreshed by
+/// [`AudioOutput::refresh_available_backends`]. Caching keeps per-frame UI polling cheap:
+/// backend enumeration probes every compiled host via `is_available()`.
+static CACHED_AUDIO_BACKENDS: OnceLock<Mutex<Option<Vec<AudioBackend>>>> = OnceLock::new();
+
+/// Cached output devices from the most recent enumeration.
+///
+/// Populated on the first [`AudioOutput::available_output_devices`] call and refreshed by
+/// [`AudioOutput::refresh_available_output_devices`]. Caching keeps per-frame UI polling
+/// cheap: device enumeration queries every backend for its device list.
+static CACHED_OUTPUT_DEVICES: OnceLock<Mutex<Option<Vec<AudioDevice>>>> = OnceLock::new();
+
 impl AudioOutput {
     /// Opens the default audio output when the platform permits it.
     ///
@@ -396,7 +410,7 @@ impl AudioOutput {
         let backend = Some(rodio::cpal::default_host().id());
         let device = backend.and_then(Self::default_device_for_backend);
         #[cfg(not(target_arch = "wasm32"))]
-        let mixer_device_sink = Self::open_default_sink();
+        let mixer_device_sink: Option<MixerDeviceSink> = Self::open_default_sink();
         #[cfg(target_arch = "wasm32")]
         let mixer_device_sink = None;
 
@@ -407,26 +421,80 @@ impl AudioOutput {
         }
     }
 
-    /// Returns the audio backends currently available on this system.
+    /// Produces a list of hosts that are currently available on the system.
+    ///
+    /// The first call enumerates the system backends and caches the result.
+    /// [`AudioOutput::refresh_available_backends`] to re-enumerate after the
+    /// platform reports new hardware.
     pub fn available_backends() -> Vec<AudioBackend> {
-        rodio::cpal::available_hosts()
+        let cache = CACHED_AUDIO_BACKENDS.get_or_init(|| Mutex::new(None));
+
+        if let Some(backends) = cache.lock().unwrap().clone() {
+            return backends;
+        }
+
+        Self::refresh_available_backends()
     }
 
-    /// Returns the output devices currently available across all audio backends.
+    /// Re-enumerates the audio backends, updates the cache, and returns the fresh list.
+    /// Also invalidates cached output devices.
+    pub fn refresh_available_backends() -> Vec<AudioBackend> {
+        let backends = rodio::cpal::available_hosts();
+
+        *CACHED_AUDIO_BACKENDS
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(backends.clone());
+        *CACHED_OUTPUT_DEVICES
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = None;
+
+        backends
+    }
+
+    /// Produces a list of hosts that are currently available on the system.
     ///
-    /// Each entry describes an individual speaker, headphone, headset, or virtual device and
-    /// records whether it is the default device of its backend. Backends that fail to list
-    /// devices are skipped.
+    /// The first call enumerates the system backends and caches the result.
+    /// [`AudioOutput::refresh_available_output_devices`] to re-enumerate after the
+    /// platform reports new hardware.
     pub fn available_output_devices() -> Vec<AudioDevice> {
-        Self::available_backends()
-            .into_iter()
+        let cache = CACHED_OUTPUT_DEVICES.get_or_init(|| Mutex::new(None));
+
+        if let Some(devices) = cache.lock().unwrap().clone() {
+            return devices;
+        }
+
+        Self::refresh_available_output_devices()
+    }
+
+    /// Re-enumerates the output devices of every current backend, updates the caches, and
+    /// returns the fresh list.
+    pub fn refresh_available_output_devices() -> Vec<AudioDevice> {
+        let backends = rodio::cpal::available_hosts();
+        let devices: Vec<AudioDevice> = backends
+            .iter()
             .flat_map(|backend| {
-                Self::available_output_devices_for_backend(backend).unwrap_or_default()
+                Self::available_output_devices_for_backend(*backend).unwrap_or_default()
             })
-            .collect()
+            .collect();
+
+        *CACHED_AUDIO_BACKENDS
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(backends);
+        *CACHED_OUTPUT_DEVICES
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(devices.clone());
+
+        devices
     }
 
     /// Returns the output devices currently available from a specific audio backend.
+    ///
+    /// Unlike [`AudioOutput::available_output_devices`], this always performs a live query
+    /// and does not consult the cache.
     pub fn available_output_devices_for_backend(
         backend: AudioBackend,
     ) -> Result<Vec<AudioDevice>, AudioOutputError> {
@@ -2497,6 +2565,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn refreshed_enumeration_populates_the_caches() {
+        let backends = AudioOutput::refresh_available_backends();
+        assert_eq!(AudioOutput::available_backends(), backends);
+
+        let devices = AudioOutput::refresh_available_output_devices();
+        assert_eq!(AudioOutput::available_output_devices(), devices);
     }
 
     #[test]
