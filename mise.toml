@@ -1,5 +1,7 @@
 [tools]
 clang = "latest"
+"github:trunk-rs/trunk" = "latest"
+"github:wasm-bindgen/wasm-pack" = "latest"
 lefthook = "latest"
 oxfmt = "latest"
 rust = { version = "nightly-2026-03-12", components = [
