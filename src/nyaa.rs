@@ -507,13 +507,6 @@ impl Output {
         devices
     }
 
-    /// The label used to represent the system default backend in UI lists.
-    ///
-    /// [`Output::available_backend_labels`] includes this label alongside the available
-    /// backend labels, and [`Output::parse_preferred_backend_label`] maps it back to
-    /// `None` (no explicit preference).
-    pub const DEFAULT_BACKEND_LABEL: &'static str = "Default";
-
     /// Returns the canonical UI label for an audio backend.
     pub fn backend_label(backend: Backend) -> String {
         format!("{backend:?}")
@@ -522,66 +515,11 @@ impl Output {
     /// Parses a backend label produced by [`Output::backend_label`].
     ///
     /// Matching is case-insensitive and ignores surrounding whitespace. Only backends
-    /// reported by [`Output::available_backends`] are recognized. The default label
-    /// ([`Output::DEFAULT_BACKEND_LABEL`]) is not a backend and returns `None`; use
-    /// [`Output::parse_available_backend_label`] when `"Default"` should map to `None`
-    /// as an explicit preference.
+    /// reported by [`Output::available_backends`] are recognized.
     pub fn parse_backend_label(label: &str) -> Option<Backend> {
         Self::available_backends()
             .into_iter()
             .find(|backend| Self::backend_label(*backend).eq_ignore_ascii_case(label.trim()))
-    }
-
-    /// Parses a label from [`Output::available_backend_labels`] into a backend preference.
-    ///
-    /// Returns `Some(None)` for the default label, `Some(Some(backend))` for a known backend,
-    /// and `None` for an unknown label.
-    pub fn parse_available_backend_label(label: &str) -> Option<Option<Backend>> {
-        let trimmed = label.trim();
-
-        if trimmed.eq_ignore_ascii_case(Self::DEFAULT_BACKEND_LABEL) {
-            return Some(None);
-        }
-
-        Self::parse_backend_label(trimmed).map(Some)
-    }
-
-    /// Returns the UI labels for the default entry plus every available backend.
-    ///
-    /// The result is sorted and deduplicated.
-    pub fn available_backend_labels() -> Vec<String> {
-        let mut labels: Vec<String> = vec![Self::DEFAULT_BACKEND_LABEL.to_string()];
-        labels.extend(
-            Self::available_backends()
-                .into_iter()
-                .map(Self::backend_label),
-        );
-        labels.sort();
-        labels.dedup();
-        labels
-    }
-
-    /// Normalizes a user-supplied backend label to its canonical form.
-    ///
-    /// Returns `Some("Default")` for the default label, `Some(label)` for a known backend,
-    /// and `None` for an unknown label. Matching is case-insensitive and ignores
-    /// surrounding whitespace.
-    pub fn canonical_backend_label(label: &str) -> Option<String> {
-        let trimmed = label.trim();
-
-        if trimmed.eq_ignore_ascii_case(Self::DEFAULT_BACKEND_LABEL) {
-            return Some(Self::DEFAULT_BACKEND_LABEL.to_string());
-        }
-
-        Self::parse_backend_label(trimmed).map(Self::backend_label)
-    }
-
-    /// Returns the UI label for a backend preference (`None` means the system default).
-    pub fn preferred_backend_label(preferred: Option<Backend>) -> String {
-        preferred.map_or_else(
-            || Self::DEFAULT_BACKEND_LABEL.to_string(),
-            Self::backend_label,
-        )
     }
 
     /// Returns the output devices currently available from a specific audio backend.
@@ -687,27 +625,14 @@ impl Output {
     /// `false` until [`Output::retry_output`] (or [`Nyaa::ensure_output`])
     /// succeeds, so callers do not need their own `Option<Output>` plus preference
     /// state.
-    pub fn new_with_preferred_backend(preferred: Option<Backend>) -> Self {
+    pub(crate) fn new_with_preferred_backend(preferred: Option<Backend>) -> Self {
         let Some(backend) = preferred else {
             return Self::new();
         };
 
         match Self::try_new_with_backend(backend) {
             Ok(output) => output,
-            Err(_) => Self::new_deferred_with_backend(backend),
-        }
-    }
-
-    /// Creates a deferred output that remembers a backend without opening it.
-    ///
-    /// The output reports [`Output::has_output`] as `false` until
-    /// [`Output::retry_output`] opens it. Use this to record a backend choice
-    /// (for example from a settings screen) without grabbing the audio device yet.
-    pub fn new_deferred_with_backend(backend: Backend) -> Self {
-        Self {
-            mixer_device_sink: Arc::new(Mutex::new(None)),
-            backend: Some(backend),
-            device: Self::default_device_for_backend(backend),
+            Err(_) => Self::new_deferred(Some(backend)),
         }
     }
 
@@ -715,7 +640,7 @@ impl Output {
     ///
     /// `None` records the system default backend; `Some(backend)` records that backend.
     /// Playback opens the device lazily via [`Output::retry_output`].
-    pub fn new_deferred_with_preferred_backend(preferred: Option<Backend>) -> Self {
+    pub fn new_deferred(preferred: Option<Backend>) -> Self {
         let Some(backend) = preferred else {
             let backend = rodio::cpal::default_host().id();
 
@@ -726,7 +651,11 @@ impl Output {
             };
         };
 
-        Self::new_deferred_with_backend(backend)
+        Self {
+            mixer_device_sink: Arc::new(Mutex::new(None)),
+            backend: Some(backend),
+            device: Self::default_device_for_backend(backend),
+        }
     }
 
     /// Returns the selected audio backend, or `None` for an output created from a sink.
@@ -1382,36 +1311,10 @@ impl Nyaa {
         nyaa.preferred_backend = None;
         Ok(nyaa)
     }
-
-    /// Creates a player for a backend preference, opening the output when possible.
-    ///
-    /// `None` follows the system default. A backend that cannot be opened is remembered
-    /// as a deferred preference instead of failing, so [`Nyaa::ensure_output`] can
-    /// retry later without extra caller state.
-    pub fn new_with_preferred_backend(preferred: Option<Backend>) -> Self {
-        let mut nyaa = Self::new_with_output(Output::new_with_preferred_backend(preferred));
-        nyaa.preferred_backend = preferred;
-        nyaa
-    }
-
-    /// Creates a player for a backend preference without opening any device.
-    ///
-    /// `None` follows the system default. The output stays deferred until
-    /// [`Nyaa::ensure_output`] or playback opens it.
-    pub fn new_deferred_with_preferred_backend(preferred: Option<Backend>) -> Self {
-        let mut nyaa =
-            Self::new_with_output(Output::new_deferred_with_preferred_backend(preferred));
-        nyaa.preferred_backend = preferred;
-        nyaa
-    }
-
     /// Creates a player connected to a reusable audio output.
     ///
     /// The preferred backend is initialized to the output's backend, so
-    /// [`Nyaa::ensure_output`] keeps using it. Use
-    /// [`Nyaa::new_with_preferred_backend`] or
-    /// [`Nyaa::set_preferred_backend`] to follow the system default (`None`) or to
-    /// prefer a different backend without managing extra state.
+    /// [`Nyaa::ensure_output`] keeps using it.
     pub fn new_with_output(output: Output) -> Self {
         let player = output.connect_player();
         let preferred_backend = output.backend();
@@ -1494,19 +1397,18 @@ impl Nyaa {
     }
 
     /// Returns the UI label for this player's backend preference.
-    ///
-    /// Returns `"Default"` when no explicit backend is preferred.
     pub fn preferred_backend_name(&self) -> String {
-        Output::preferred_backend_label(self.preferred_backend)
+        Output::backend_label(self.preferred_backend.unwrap_or_else(|| {
+            self.output
+                .backend()
+                .unwrap_or_else(|| rodio::cpal::default_host().id())
+        }))
     }
 
     /// Returns a UI-friendly name for this player's output.
     ///
-    /// Returns the active backend and device (for example `"Alsa (Built-in Audio)"`) once
-    /// the output is initialized, and the preferred backend label (`"Default"` when
-    /// following the system default) while the output is still deferred or failed. This
-    /// mirrors the common wrapper pattern of showing the preference until the device
-    /// exists.
+    /// Returns the active backend and device once the output is initialized or
+    /// [`Nyaa::preferred_backend_name`] when the output is not yet open.
     pub fn backend_display_name(&self) -> String {
         if self.has_output() {
             self.output.display_name()
@@ -1515,19 +1417,13 @@ impl Nyaa {
         }
     }
 
-    /// Remembers a backend preference, replacing the current output.
+    /// Remembers a backend preference, replacing the current output. `None` follows
+    /// the system default.
     ///
-    /// `None` follows the system default. The current source is stopped and its last
-    /// reported position is held. The new output is opened immediately when possible and
-    /// otherwise left deferred with the preference retained; a later
-    /// [`Nyaa::ensure_output`] (or the next playback, which retries automatically)
-    /// completes the switch. Unlike [`Nyaa::switch_backend`], this never fails, so
-    /// settings UI does not need its own `Option` plus preference state.
+    /// The new output is opened immediately when possible.
     ///
     /// Does nothing when the preference is unchanged and an output backend is already
-    /// selected. In particular, re-selecting the current preference never interrupts
-    /// playback, and a custom [`Output::from_sink`] output is preserved until a
-    /// different preference is set.
+    /// selected.
     pub fn set_preferred_backend(&mut self, backend: Option<Backend>) {
         if self.preferred_backend == backend && self.backend().is_some() {
             return;
@@ -1539,18 +1435,15 @@ impl Nyaa {
         self.player = self.output.connect_player();
     }
 
-    /// Remembers a backend preference from a UI label.
+    /// Remembers a backend preference using [`Output::parse_backend_label`].
     ///
-    /// Accepts [`Output::DEFAULT_BACKEND_LABEL`] (`"Default"`, case-insensitive) for
-    /// the system default as well as any label from
-    /// [`Output::available_backend_labels`]. Returns `false` without changing anything
-    /// when the label is unknown.
+    /// Returns `false` without changing anything when the label is unknown.
     pub fn set_preferred_backend_by_name(&mut self, name: &str) -> bool {
-        let Some(backend) = Output::parse_available_backend_label(name) else {
+        let Some(backend) = Output::parse_backend_label(name) else {
             return false;
         };
 
-        self.set_preferred_backend(backend);
+        self.set_preferred_backend(Some(backend));
         true
     }
 
@@ -3025,62 +2918,8 @@ mod tests {
     }
 
     #[test]
-    fn backend_labels_are_canonical_sorted_and_unique() {
-        assert_eq!(
-            Output::canonical_backend_label(" default ").as_deref(),
-            Some("Default")
-        );
-        assert_eq!(Output::canonical_backend_label(""), None);
-        assert_eq!(Output::canonical_backend_label("not-a-backend"), None);
-
-        let labels = Output::available_backend_labels();
-        let mut expected = labels.clone();
-        expected.sort();
-        expected.dedup();
-        assert_eq!(labels, expected);
-        assert!(labels.iter().any(|label| label == "Default"));
-
-        for backend in Output::available_backends() {
-            let label = Output::backend_label(backend);
-            assert_eq!(
-                Output::parse_backend_label(&label.to_lowercase()),
-                Some(backend)
-            );
-            assert_eq!(Output::canonical_backend_label(&label), Some(label.clone()));
-            assert_eq!(
-                Output::parse_available_backend_label(&label),
-                Some(Some(backend))
-            );
-            assert_eq!(Output::preferred_backend_label(Some(backend)), label);
-        }
-
-        assert_eq!(Output::parse_available_backend_label("Default"), Some(None));
-        assert_eq!(
-            Output::parse_available_backend_label(" default "),
-            Some(None)
-        );
-        assert_eq!(Output::parse_available_backend_label("not-a-backend"), None);
-        assert_eq!(Output::preferred_backend_label(None), "Default".to_string());
-    }
-
-    #[test]
-    fn preferred_backend_defaults_to_system_default() {
-        let nyaa = Nyaa::new();
-        assert_eq!(nyaa.preferred_backend(), None);
-        assert_eq!(nyaa.preferred_backend_name(), "Default");
-
-        let output = Output::new();
-        let backend = output.backend();
-        let nyaa = Nyaa::new_with_output(output);
-        assert_eq!(nyaa.preferred_backend(), backend);
-    }
-
-    #[test]
     fn setting_preferred_backend_by_name_rejects_unknown_labels() {
         let mut nyaa = Nyaa::new();
-
-        assert!(nyaa.set_preferred_backend_by_name(" default "));
-        assert_eq!(nyaa.preferred_backend(), None);
 
         if let Some(backend) = Output::available_backends().into_iter().next() {
             let label = Output::backend_label(backend);
@@ -3131,7 +2970,7 @@ mod tests {
             return;
         };
 
-        let output = Output::new_deferred_with_backend(backend);
+        let output = Output::new_deferred(Some(backend));
         assert_eq!(output.backend(), Some(backend));
         assert!(!output.has_sink());
 
@@ -3155,24 +2994,5 @@ mod tests {
         nyaa.play_static_bytes(TEST_AUDIO_BYTES)
             .expect("deferred output should play after ensure");
         assert!(nyaa.is_playing());
-    }
-
-    #[test]
-    fn deferred_default_reports_default_until_opened() {
-        let output = Output::new_deferred_with_preferred_backend(None);
-        assert!(!output.has_sink());
-
-        let mut nyaa = Nyaa::new_deferred_with_preferred_backend(None);
-        assert_eq!(nyaa.preferred_backend(), None);
-        assert!(!nyaa.has_output());
-        assert_eq!(nyaa.backend_display_name(), "Default");
-
-        if nyaa.ensure_output().is_err() {
-            eprintln!("Skipping deferred default assertions: no output device");
-            return;
-        }
-
-        assert!(nyaa.has_output());
-        assert!(nyaa.backend_display_name() != "Default" || nyaa.backend().is_none());
     }
 }
