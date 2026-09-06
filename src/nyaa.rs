@@ -1916,7 +1916,9 @@ impl Nyaa {
         self.set_playback_state(PlaybackState::Idle);
     }
 
-    fn load_shared_arc_bytes(&mut self, bytes: Arc<[u8]>) -> Result<(), NyaaError> {
+    /// Loads bytes stored in an [`Arc`], which allows multiple players to share the same
+    /// audio data without copying it onto the heap, without starting playback.
+    pub fn load_shared_arc_bytes(&mut self, bytes: Arc<[u8]>) -> Result<(), NyaaError> {
         let duration = Self::decoder_from_shared_bytes(bytes.clone())
             .map_err(|error| self.record_failure(error))?
             .total_duration();
