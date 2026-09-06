@@ -36,10 +36,10 @@ or contractually specified behavior.
 If a test seems difficult to implement, stop work and ask me to clarify
 if I want to proceed with a complex harness to properly test the behavior.
 
-## UI / Game Testing Rules
+## UI / Testing Rules
 
 DO NOT use screenshots, image capture, `view_image`, visual inspection,
-computer-vision analysis, or screenshot-based reasoning to validate the game.
+computer-vision analysis, or screenshot-based reasoning to validate the library.
 
 Do not take screenshots unless I explicitly ask you to.
 
