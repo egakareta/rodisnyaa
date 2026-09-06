@@ -1420,7 +1420,9 @@ impl Nyaa {
     /// Remembers a backend preference, replacing the current output. `None` follows
     /// the system default.
     ///
-    /// The new output is opened immediately when possible.
+    /// The new output is opened immediately when possible. Active playback keeps its
+    /// source and position and resumes on the new output, idle players keep their
+    /// loaded source and position.
     ///
     /// Does nothing when the preference is unchanged and an output backend is already
     /// selected.
@@ -1429,10 +1431,8 @@ impl Nyaa {
             return;
         }
 
-        self.stop();
-        self.preferred_backend = backend;
-        self.output = Output::new_with_preferred_backend(backend);
-        self.player = self.output.connect_player();
+        let output = Output::new_with_preferred_backend(backend);
+        self.replace_output_preserving_playback(output, backend);
     }
 
     /// Remembers a backend preference using [`Output::parse_backend_label`].
@@ -1462,9 +1462,8 @@ impl Nyaa {
         if self.backend().is_none()
             && let Some(backend) = self.preferred_backend
         {
-            self.stop();
-            self.output = Output::new_with_preferred_backend(Some(backend));
-            self.player = self.output.connect_player();
+            let output = Output::new_with_preferred_backend(Some(backend));
+            self.replace_output_preserving_playback(output, Some(backend));
         }
 
         self.retry_output()
@@ -1472,11 +1471,11 @@ impl Nyaa {
 
     /// Switches this player to a specific audio backend.
     ///
-    /// A successful switch stops the current source, holds its last reported position, and
-    /// remembers the backend as the new preference (see
-    /// [`Nyaa::preferred_backend`]). A failed switch leaves the current output and
-    /// preference untouched. Other players that shared the previous [`Output`] are
-    /// not affected. To remember a backend even when opening fails, use
+    /// A successful switch keeps the current source and position, resuming on the new
+    /// output when playback was active, and remembers the backend as the new
+    /// preference (see [`Nyaa::preferred_backend`]). A failed switch leaves the
+    /// current output and preference untouched. Other players that shared the previous
+    /// [`Output`] are not affected. To remember a backend even when opening fails, use
     /// [`Nyaa::set_preferred_backend`] instead.
     pub fn switch_backend(&mut self, backend: Backend) -> Result<(), AudioOutputError> {
         if self.backend() == Some(backend) {
@@ -1486,10 +1485,7 @@ impl Nyaa {
 
         let output = Output::try_new_with_backend(backend)?;
 
-        self.stop();
-        self.preferred_backend = Some(backend);
-        self.output = output;
-        self.player = self.output.connect_player();
+        self.replace_output_preserving_playback(output, Some(backend));
 
         Ok(())
     }
@@ -1497,10 +1493,10 @@ impl Nyaa {
     /// Switches this player to a specific output device such as a speaker, headphone, or
     /// virtual device.
     ///
-    /// A successful switch stops the current source, holds its last reported position, and
-    /// remembers the device's backend as the new preference. Other players that shared the
-    /// previous [`Output`] are not affected. Switching devices also switches the
-    /// player's backend to the device's backend.
+    /// A successful switch keeps the current source and position, resuming on the new
+    /// device when playback was active, and remembers the device's backend as the new
+    /// preference. Other players that shared the previous [`Output`] are not affected.
+    /// Switching devices also switches the player's backend to the device's backend.
     pub fn switch_device(&mut self, device: &Device) -> Result<(), AudioOutputError> {
         if self.device().as_ref() == Some(device) {
             self.preferred_backend = Some(device.backend);
@@ -1509,12 +1505,93 @@ impl Nyaa {
 
         let output = Output::try_new_with_device(device)?;
 
-        self.stop();
-        self.preferred_backend = Some(device.backend);
-        self.output = output;
-        self.player = self.output.connect_player();
+        self.replace_output_preserving_playback(output, Some(device.backend));
 
         Ok(())
+    }
+
+    fn has_current_source(&self) -> bool {
+        if self.current_shared_bytes.is_some() || self.current_static_bytes.is_some() {
+            return true;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.current_file_path.is_some() {
+            return true;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        let _ = ();
+
+        false
+    }
+
+    fn replace_output_preserving_playback(
+        &mut self,
+        output: Output,
+        preferred_backend: Option<Backend>,
+    ) {
+        let position = self.position();
+        let was_playing = self.is_playing();
+        let was_paused = self.is_paused();
+        let has_source = self.has_current_source();
+
+        self.output = output;
+        self.preferred_backend = preferred_backend;
+
+        // A switch originates from a user gesture, so give a deferred output (for
+        // example a browser output waiting on autoplay policy) one chance to open
+        // now instead of dropping active playback back to `Idle`. Failures stay
+        // lazy: the next `play_*` retries and surfaces them.
+        if !self.output.has_sink() {
+            let _ = self.output.retry_sink();
+        }
+
+        if (was_playing || was_paused) && has_source && self.output.has_sink() {
+            // Rebuild the decoder on the new output at the same source position.
+            // This preserves effects, speed, looping, volume, and the paused state.
+            if self.try_seek_with_decode(position).is_err() {
+                // The playback state is already `Failed`; just make sure the player
+                // is tied to the new output and the position stays held.
+                self.player = self.output.connect_player();
+
+                if let Some(player) = self.player.as_ref() {
+                    player.set_volume(self.volume());
+                    player.set_speed(self.player_speed());
+                }
+
+                self.position_offset = position;
+                self.player_position_anchor = Duration::ZERO;
+                self.position_is_held = true;
+            }
+
+            return;
+        }
+
+        if (was_playing || was_paused) && has_source {
+            // Deferred output without a sink (for example a browser output waiting for
+            // a user gesture): keep the source so the next `play_*` resumes from the
+            // held position instead of restarting.
+            self.position_offset = position;
+            self.player_position_anchor = Duration::ZERO;
+            self.position_is_held = true;
+            self.player = self.output.connect_player();
+            self.set_playback_state(PlaybackState::Idle);
+            return;
+        }
+
+        // Idle, ended, loading, failed, or no source: keep the held position,
+        // duration, source handles, and lifecycle state; only reconnect an idle player.
+        self.player = self.output.connect_player();
+
+        if let Some(player) = self.player.as_ref() {
+            player.set_volume(self.volume());
+            player.set_speed(self.player_speed());
+
+            if was_paused {
+                player.pause();
+            }
+        }
     }
 
     /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
@@ -2915,6 +2992,65 @@ mod tests {
                 .expect("device output should accept players");
             return;
         }
+    }
+
+    #[test]
+    fn switching_output_preserves_transport_state_and_position() {
+        let mut nyaa = Nyaa::new();
+        nyaa.play_static_bytes(TEST_AUDIO_BYTES)
+            .expect("embedded audio should be playable");
+        thread::sleep(Duration::from_millis(100));
+        assert!(nyaa.is_playing());
+
+        let current = nyaa.device();
+        let Some(other) = Output::available_devices()
+            .into_iter()
+            .find(|device| Some(device) != current.as_ref())
+        else {
+            eprintln!("Skipping transport assertions: no alternate output device");
+            return;
+        };
+
+        let position_before = nyaa.position();
+        nyaa.switch_device(&other)
+            .expect("an enumerated device should open");
+        assert_eq!(nyaa.device().as_ref(), Some(&other));
+
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            nyaa.is_playing(),
+            "switching outputs stopped playback at {:?}",
+            nyaa.position()
+        );
+        assert!(
+            nyaa.position() >= position_before,
+            "switching outputs moved backward from {position_before:?} to {:?}",
+            nyaa.position()
+        );
+        assert!(nyaa.duration().is_some());
+
+        nyaa.pause();
+        let paused_position = nyaa.position();
+        let current = nyaa.device();
+        let Some(third) = Output::available_devices()
+            .into_iter()
+            .find(|device| Some(device) != current.as_ref())
+        else {
+            return;
+        };
+
+        nyaa.switch_device(&third)
+            .expect("an enumerated device should open");
+        assert!(
+            nyaa.is_paused(),
+            "switching outputs resumed paused playback"
+        );
+        assert!(
+            nyaa.position().saturating_sub(paused_position) < Duration::from_millis(500)
+                && paused_position.saturating_sub(nyaa.position()) < Duration::from_millis(500),
+            "switching outputs moved paused playback from {paused_position:?} to {:?}",
+            nyaa.position()
+        );
     }
 
     #[test]

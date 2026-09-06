@@ -211,26 +211,12 @@ impl App {
     fn select_backend(&mut self, backend: Backend) {
         if let Err(error) = self.nyaa.switch_backend(backend) {
             log::error!("could not switch audio backend: {error}");
-            return;
-        }
-
-        let song = SONGS[self.selected_song];
-
-        if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
-            log::error!("could not reload audio after switching backends: {error}");
         }
     }
 
     fn select_device(&mut self, device: &Device) {
         if let Err(error) = self.nyaa.switch_device(device) {
             log::error!("could not switch audio device: {error}");
-            return;
-        }
-
-        let song = SONGS[self.selected_song];
-
-        if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
-            log::error!("could not reload audio after switching devices: {error}");
         }
     }
 
