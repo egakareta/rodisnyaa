@@ -1,0 +1,27 @@
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libasound2-dev libjack-jackd2-dev libudev-dev pkg-config
+          version: 1.0
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: mise check
+      - run: mise test:native
+      - run: mise test:wasm
