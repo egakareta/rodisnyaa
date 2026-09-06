@@ -1,5 +1,6 @@
 [tools]
 clang = "latest"
+"github:Unreal-Works/cmdshim" = "latest"
 "github:trunk-rs/trunk" = "latest"
 "github:wasm-bindgen/wasm-pack" = "latest"
 lefthook = "latest"
@@ -57,6 +58,19 @@ run = "wasm-pack test --release --headless --chrome . --test browser_benches -- 
 description = "Serve the example app with Trunk"
 dir = "{{config_root}}/examples/app"
 run = "trunk serve"
+
+[env]
+_.path = { path = ["{{ exec(command='cmdshim path') }}"], tools = true }
+
+[_.cmdshim.rodisnyaa]
+run = [
+    "cargo",
+    "run",
+    "--quiet",
+    "--manifest-path",
+    "{{config_root}}/Cargo.toml",
+    "--",
+]
 
 [bootstrap.packages]
 "apt:pkg-config" = "latest"
