@@ -30,7 +30,7 @@ Determine these facts before implementing:
 - Whether playback begins in a browser gesture handler.
 - Whether the application has a persistent update loop in which to poll loading and state.
 - Whether output selection, effects, pitch preservation, or waveform rendering is required.
-- Whether an existing `Nyaa` or shared `AudioOutput` already exists. Reuse it when its lifetime
+- Whether an existing `Nyaa` or shared `Output` already exists. Reuse it when its lifetime
   matches the playback UI; do not create a player for every update or render.
 
 ## Choose Features

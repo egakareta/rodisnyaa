@@ -2,8 +2,8 @@ use web_time::Duration;
 
 use eframe::egui;
 use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, AudioAsset, AudioBackend, AudioDevice, AudioEffects,
-    AudioOutput, AutomaticGainEffect, DistortionEffect, FilterEffect, LimiterEffect, Nyaa,
+    format_timestamp_secs, parse_timestamp, AudioAsset, AudioDevice, AudioEffects,
+    AutomaticGainEffect, Backend, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, Output,
     ReverbEffect, Waveform, WaveformBuilder,
 };
 use std::{
@@ -208,8 +208,8 @@ impl App {
             .ok();
     }
 
-    fn select_audio_backend(&mut self, audio_backend: AudioBackend) {
-        if let Err(error) = self.nyaa.switch_audio_backend(audio_backend) {
+    fn select_backend(&mut self, backend: Backend) {
+        if let Err(error) = self.nyaa.switch_backend(backend) {
             log::error!("could not switch audio backend: {error}");
             return;
         }
@@ -221,8 +221,8 @@ impl App {
         }
     }
 
-    fn select_audio_device(&mut self, audio_device: &AudioDevice) {
-        if let Err(error) = self.nyaa.switch_audio_device(audio_device) {
+    fn select_device(&mut self, device: &AudioDevice) {
+        if let Err(error) = self.nyaa.switch_device(device) {
             log::error!("could not switch audio device: {error}");
             return;
         }
@@ -702,8 +702,8 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     let mut selected_song = self.selected_song;
-                    let mut selected_audio_backend = self.nyaa.audio_backend();
-                    let mut selected_audio_device = self.nyaa.audio_device();
+                    let mut selected_backend = self.nyaa.backend();
+                    let mut selected_device = self.nyaa.device();
 
                     ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
                         ui.horizontal(|ui| {
@@ -735,17 +735,17 @@ impl eframe::App for App {
 
                         ui.horizontal(|ui| {
                             ui.label("Audio backend:");
-                            egui::ComboBox::from_id_salt("audio_backend_selector")
+                            egui::ComboBox::from_id_salt("backend_selector")
                                 .selected_text(
-                                    selected_audio_backend
+                                    selected_backend
                                         .map(|backend| backend.name())
                                         .unwrap_or("Custom output"),
                                 )
                                 .width(240.0)
                                 .show_ui(ui, |ui: &mut egui::Ui| {
-                                    for &backend in &AudioOutput::available_backends() {
+                                    for &backend in &Output::available_backends() {
                                         ui.selectable_value(
-                                            &mut selected_audio_backend,
+                                            &mut selected_backend,
                                             Some(backend),
                                             backend.name(),
                                         );
@@ -755,22 +755,22 @@ impl eframe::App for App {
 
                         ui.horizontal(|ui| {
                             ui.label("Output device:");
-                            let selected_text = selected_audio_device
+                            let selected_text = selected_device
                                 .as_ref()
                                 .map(|device| device.to_string())
                                 .unwrap_or_else(|| "Custom output".to_string());
-                            egui::ComboBox::from_id_salt("audio_device_selector")
+                            egui::ComboBox::from_id_salt("device_selector")
                                 .selected_text(selected_text)
                                 .width(240.0)
                                 .show_ui(ui, |ui| {
-                                    let audio_devices = AudioOutput::available_output_devices();
-                                    if audio_devices.is_empty() {
+                                    let devices = Output::available_devices();
+                                    if devices.is_empty() {
                                         ui.label("No output devices found");
                                     }
 
-                                    for device in &audio_devices {
+                                    for device in &devices {
                                         ui.selectable_value(
-                                            &mut selected_audio_device,
+                                            &mut selected_device,
                                             Some(device.clone()),
                                             device.to_string(),
                                         );
@@ -782,8 +782,8 @@ impl eframe::App for App {
                                 .on_hover_text("Re-enumerate output devices")
                                 .clicked()
                             {
-                                AudioOutput::refresh_available_backends();
-                                AudioOutput::refresh_available_output_devices();
+                                Output::refresh_available_backends();
+                                Output::refresh_available_devices();
                             }
                         });
                     });
@@ -792,13 +792,13 @@ impl eframe::App for App {
                         self.select_song(selected_song);
                     }
 
-                    if selected_audio_backend != self.nyaa.audio_backend() {
-                        if let Some(audio_backend) = selected_audio_backend {
-                            self.select_audio_backend(audio_backend);
+                    if selected_backend != self.nyaa.backend() {
+                        if let Some(backend) = selected_backend {
+                            self.select_backend(backend);
                         }
-                    } else if selected_audio_device != self.nyaa.audio_device() {
-                        if let Some(audio_device) = selected_audio_device {
-                            self.select_audio_device(&audio_device);
+                    } else if selected_device != self.nyaa.device() {
+                        if let Some(device) = selected_device {
+                            self.select_device(&device);
                         }
                     }
 

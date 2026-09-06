@@ -6,7 +6,7 @@ Most public types are re-exported at the crate root:
 
 ```rust
 use rodisnyaa::{
-    AudioAsset, AudioEffects, AudioOutput, Nyaa, NyaaError, PlaybackEvent, PlaybackState,
+    AudioAsset, AudioEffects, Output, Nyaa, NyaaError, PlaybackEvent, PlaybackState,
     Waveform,
 };
 ```
@@ -19,9 +19,9 @@ The following public modules are also supported:
 ## Player Construction
 
 - `Nyaa::new()` (Best-effort default output, recommended): Native output failure is deferred; WASM output opens when playback begins.
-- `Nyaa::new_with_output(output)` (Reuse a selected/shared output): Connects the player to that `AudioOutput`.
-- `nyaa.retry_audio_output()` (Recover deferred output): Opens the selected output and marks failures in player state.
-- `nyaa.has_audio_output()` (Inspect output readiness): May be false in a browser before the first gesture-backed playback.
+- `Nyaa::new_with_output(output)` (Reuse a selected/shared output): Connects the player to that `Output`.
+- `nyaa.retry_output()` (Recover deferred output): Opens the selected output and marks failures in player state.
+- `nyaa.has_output()` (Inspect output readiness): May be false in a browser before the first gesture-backed playback.
 
 Keep a player alive in application state. Dropping it ends its ownership of playback resources.
 
@@ -125,18 +125,18 @@ player use.
 
 Use these cached enumeration APIs for settings UIs:
 
-- `AudioOutput::available_backends()`
-- `AudioOutput::available_output_devices()`
+- `Output::available_backends()`
+- `Output::available_devices()`
 
-Use `refresh_available_backends()` or `refresh_available_output_devices()` after an explicit
-refresh/device-change action. Use `available_output_devices_for_backend(backend)` for a live,
+Use `refresh_available_backends()` or `refresh_available_devices()` after an explicit
+refresh/device-change action. Use `available_devices_for_backend(backend)` for a live,
 backend-specific query.
 
-Open an output with `AudioOutput::try_new_with_backend(backend)` or
-`AudioOutput::try_new_with_device(&device)`. `AudioDevice` exposes `backend()`, `id()`,
+Open an output with `Output::try_new_with_backend(backend)` or
+`Output::try_new_with_device(&device)`. `AudioDevice` exposes `backend()`, `id()`,
 `description()`, `name()`, `is_default()`, `device_type()`, and `interface_type()`.
 
-`Nyaa::switch_audio_backend()` and `switch_audio_device()` stop that player's current source and
+`Nyaa::switch_backend()` and `switch_device()` stop that player's current source and
 hold its last position. Other players that shared the previous output are unaffected.
 
 ## Effects

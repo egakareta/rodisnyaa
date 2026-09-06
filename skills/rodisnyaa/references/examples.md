@@ -84,14 +84,14 @@ run.
 Enumerate devices for a settings UI, then keep the selected output/player alive:
 
 ```rust
-use rodisnyaa::{AudioDevice, AudioOutput, AudioOutputError, Nyaa};
+use rodisnyaa::{AudioDevice, Output, AudioOutputError, Nyaa};
 
 fn available_devices() -> Vec<AudioDevice> {
-    AudioOutput::available_output_devices() // Refresh this with `AudioOutput::refresh_available_output_devices()`
+    Output::available_devices() // Refresh this with `Output::refresh_available_devices()`
 }
 
 fn player_for_device(device: &AudioDevice) -> Result<Nyaa, AudioOutputError> {
-    let output = AudioOutput::try_new_with_device(device)?;
+    let output = Output::try_new_with_device(device)?;
     Ok(Nyaa::new_with_output(output))
 }
 ```
@@ -102,7 +102,7 @@ Opening can still fail if the selected device disappeared after enumeration.
 To run multiple players through one output, clone the output:
 
 ```rust
-let output = rodisnyaa::AudioOutput::try_new_with_device(&device)?;
+let output = rodisnyaa::Output::try_new_with_device(&device)?;
 let music = rodisnyaa::Nyaa::new_with_output(output.clone());
 let effects = rodisnyaa::Nyaa::new_with_output(output);
 ```

@@ -1,6 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use criterion::Criterion;
-use rodisnyaa::{AudioOutput, Nyaa, format_timestamp};
+use rodisnyaa::{Nyaa, Output, format_timestamp};
 use std::hint::black_box;
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,12 +91,7 @@ fn benchmark_name(operation: &str, storage: ByteStorage, position: BenchmarkPosi
     )
 }
 
-fn prepare_player(
-    output: &AudioOutput,
-    storage: ByteStorage,
-    position: Duration,
-    paused: bool,
-) -> Nyaa {
+fn prepare_player(output: &Output, storage: ByteStorage, position: Duration, paused: bool) -> Nyaa {
     let mut nyaa = Nyaa::new_with_output(output.clone());
     storage.play(&mut nyaa);
     nyaa.try_seek(position)
@@ -119,7 +114,7 @@ fn prepare_player(
 }
 
 pub fn bench_play(criterion: &mut Criterion) {
-    let output = AudioOutput::new();
+    let output = Output::new();
 
     for storage in ByteStorage::ALL {
         for position in benchmark_positions() {
@@ -155,7 +150,7 @@ pub fn bench_play(criterion: &mut Criterion) {
 }
 
 pub fn bench_stop(criterion: &mut Criterion) {
-    let output = AudioOutput::new();
+    let output = Output::new();
 
     for storage in ByteStorage::ALL {
         for position in benchmark_positions() {
@@ -189,7 +184,7 @@ pub fn bench_stop(criterion: &mut Criterion) {
 
 pub fn bench_seek(criterion: &mut Criterion) {
     let duration = audio_duration();
-    let output = AudioOutput::new();
+    let output = Output::new();
 
     for storage in ByteStorage::ALL {
         for position in benchmark_positions() {
@@ -223,7 +218,7 @@ pub fn bench_seek(criterion: &mut Criterion) {
 }
 
 pub fn bench_speed(criterion: &mut Criterion) {
-    let output = AudioOutput::new();
+    let output = Output::new();
 
     for storage in ByteStorage::ALL {
         for position in benchmark_positions() {
@@ -245,7 +240,7 @@ pub fn bench_speed(criterion: &mut Criterion) {
 }
 
 pub fn bench_volume(criterion: &mut Criterion) {
-    let output = AudioOutput::new();
+    let output = Output::new();
 
     for storage in ByteStorage::ALL {
         for position in benchmark_positions() {

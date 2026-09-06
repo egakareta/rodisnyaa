@@ -4,11 +4,11 @@ static AUDIO: &[u8] = include_bytes!("polar 240 yay.mp3");
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), rodisnyaa::NyaaError> {
-    use rodisnyaa::{AudioOutput, Nyaa};
+    use rodisnyaa::{Nyaa, Output};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut list = false;
-    let mut backend_name = AudioOutput::DEFAULT_BACKEND_LABEL.to_string();
+    let mut backend_name = Output::DEFAULT_BACKEND_LABEL.to_string();
 
     let mut index = 0;
     while index < args.len() {
@@ -31,7 +31,7 @@ fn main() -> Result<(), rodisnyaa::NyaaError> {
     }
 
     if list {
-        for label in AudioOutput::available_backend_labels() {
+        for label in Output::available_backend_labels() {
             println!("{label}");
         }
         return Ok(());
@@ -42,9 +42,9 @@ fn main() -> Result<(), rodisnyaa::NyaaError> {
     let mut nyaa = Nyaa::new_deferred_with_preferred_backend(None);
     println!("deferred output: {}", nyaa.backend_display_name());
 
-    if !nyaa.set_preferred_audio_backend_by_name(&backend_name) {
+    if !nyaa.set_preferred_backend_by_name(&backend_name) {
         eprintln!("unknown backend {backend_name:?}; expected one of:");
-        for label in AudioOutput::available_backend_labels() {
+        for label in Output::available_backend_labels() {
             eprintln!("  {label}");
         }
         std::process::exit(2);
@@ -53,7 +53,7 @@ fn main() -> Result<(), rodisnyaa::NyaaError> {
 
     // Open the preferred backend up front so failures surface before playback.
     // (Playback would retry automatically, so this step is optional.)
-    nyaa.ensure_audio_output()?;
+    nyaa.ensure_output()?;
     println!("active output: {}", nyaa.backend_display_name());
 
     nyaa.play_static_bytes(AUDIO)?;

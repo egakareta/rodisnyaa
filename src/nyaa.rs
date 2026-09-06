@@ -50,7 +50,7 @@ pub enum NyaaError {
 
     /// The audio output could not be initialized.
     #[error(transparent)]
-    AudioOutput(#[from] AudioOutputError),
+    Output(#[from] AudioOutputError),
 
     /// The playback range is empty or starts beyond the end of the source.
     #[error("the playback range must contain audio")]
@@ -67,7 +67,7 @@ pub enum NyaaError {
 }
 
 /// A CPAL audio host that can provide an output device.
-pub type AudioBackend = rodio::cpal::HostId;
+pub type Backend = rodio::cpal::HostId;
 
 /// An error that can occur while opening an audio backend or device.
 #[derive(Debug, Error)]
@@ -76,7 +76,7 @@ pub enum AudioOutputError {
     #[error("audio backend {backend} is unavailable: {source}")]
     BackendUnavailable {
         /// The backend that was requested.
-        backend: AudioBackend,
+        backend: Backend,
         /// The error returned by CPAL while initializing the backend.
         #[source]
         source: rodio::cpal::HostUnavailable,
@@ -84,13 +84,13 @@ pub enum AudioOutputError {
 
     /// The requested backend has no output device.
     #[error("audio backend {0} has no output device")]
-    NoOutputDevice(AudioBackend),
+    NoOutputDevice(Backend),
 
     /// The output devices of the requested backend could not be listed.
     #[error("failed to list output devices of audio backend {backend}: {source}")]
     ListDevices {
         /// The backend whose devices could not be listed.
-        backend: AudioBackend,
+        backend: Backend,
         /// The error returned by CPAL while listing devices.
         #[source]
         source: rodio::cpal::DevicesError,
@@ -109,7 +109,7 @@ pub enum AudioOutputError {
     #[error("failed to open audio backend {backend}: {source}")]
     OpenStream {
         /// The backend that was requested.
-        backend: AudioBackend,
+        backend: Backend,
         /// The error returned by rodio while opening the output stream.
         #[source]
         source: rodio::stream::DeviceSinkError,
@@ -128,16 +128,16 @@ pub enum AudioOutputError {
 
 /// An individual output device such as speakers, headphones, or a virtual device.
 ///
-/// Values are obtained from [`AudioOutput::available_output_devices`] or
-/// [`AudioOutput::available_output_devices_for_backend`] and can be passed to
-/// [`AudioOutput::try_new_with_device`] or [`Nyaa::switch_audio_device`].
+/// Values are obtained from [`Output::available_devices`] or
+/// [`Output::available_devices_for_backend`] and can be passed to
+/// [`Output::try_new_with_device`] or [`Nyaa::switch_device`].
 ///
 /// Devices are identified by their CPAL device id when the platform provides one and fall back
 /// to name matching otherwise. A device obtained from enumeration may no longer exist when it is
 /// opened, in which case opening returns [`AudioOutputError::DeviceNotFound`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioDevice {
-    backend: AudioBackend,
+    backend: Backend,
     id: Option<rodio::cpal::DeviceId>,
     description: rodio::cpal::DeviceDescription,
     is_default: bool,
@@ -157,7 +157,7 @@ impl std::fmt::Display for AudioDevice {
 
 impl AudioDevice {
     /// Returns the backend that provides this device.
-    pub fn backend(&self) -> AudioBackend {
+    pub fn backend(&self) -> Backend {
         self.backend
     }
 
@@ -196,7 +196,7 @@ impl AudioDevice {
     }
 
     fn from_cpal_device(
-        backend: AudioBackend,
+        backend: Backend,
         device: &rodio::cpal::Device,
         is_default: bool,
     ) -> Option<Self> {
@@ -369,20 +369,20 @@ pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
 /// device sink for every player.
 ///
 /// ```no_run
-/// use rodisnyaa::{AudioOutput, Nyaa};
+/// use rodisnyaa::{Output, Nyaa};
 ///
-/// let output = AudioOutput::new();
+/// let output = Output::new();
 /// let first_player = Nyaa::new_with_output(output.clone());
 /// let second_player = Nyaa::new_with_output(output);
 /// ```
 #[derive(Clone)]
-pub struct AudioOutput {
+pub struct Output {
     mixer_device_sink: Arc<Mutex<Option<MixerDeviceSink>>>,
-    backend: Option<AudioBackend>,
+    backend: Option<Backend>,
     device: Option<AudioDevice>,
 }
 
-impl Default for AudioOutput {
+impl Default for Output {
     fn default() -> Self {
         Self::new()
     }
@@ -390,19 +390,19 @@ impl Default for AudioOutput {
 
 /// Cached audio backends from the most recent enumeration.
 ///
-/// Populated on the first [`AudioOutput::available_backends`] call and refreshed by
-/// [`AudioOutput::refresh_available_backends`]. Caching keeps per-frame UI polling cheap:
+/// Populated on the first [`Output::available_backends`] call and refreshed by
+/// [`Output::refresh_available_backends`]. Caching keeps per-frame UI polling cheap:
 /// backend enumeration probes every compiled host via `is_available()`.
-static CACHED_AUDIO_BACKENDS: OnceLock<Mutex<Option<Vec<AudioBackend>>>> = OnceLock::new();
+static CACHED_AUDIO_BACKENDS: OnceLock<Mutex<Option<Vec<Backend>>>> = OnceLock::new();
 
 /// Cached output devices from the most recent enumeration.
 ///
-/// Populated on the first [`AudioOutput::available_output_devices`] call and refreshed by
-/// [`AudioOutput::refresh_available_output_devices`]. Caching keeps per-frame UI polling
+/// Populated on the first [`Output::available_devices`] call and refreshed by
+/// [`Output::refresh_available_devices`]. Caching keeps per-frame UI polling
 /// cheap: device enumeration queries every backend for its device list.
 static CACHED_OUTPUT_DEVICES: OnceLock<Mutex<Option<Vec<AudioDevice>>>> = OnceLock::new();
 
-impl AudioOutput {
+impl Output {
     /// Opens the default audio output when the platform permits it.
     ///
     /// Browser targets defer opening the output until playback starts so it can happen in
@@ -425,9 +425,9 @@ impl AudioOutput {
     /// Produces a list of hosts that are currently available on the system.
     ///
     /// The first call enumerates the system backends and caches the result.
-    /// [`AudioOutput::refresh_available_backends`] to re-enumerate after the
+    /// [`Output::refresh_available_backends`] to re-enumerate after the
     /// platform reports new hardware.
-    pub fn available_backends() -> Vec<AudioBackend> {
+    pub fn available_backends() -> Vec<Backend> {
         let cache = CACHED_AUDIO_BACKENDS.get_or_init(|| Mutex::new(None));
 
         if let Some(backends) = cache.lock().unwrap().clone() {
@@ -439,7 +439,7 @@ impl AudioOutput {
 
     /// Re-enumerates the audio backends, updates the cache, and returns the fresh list.
     /// Also invalidates cached output devices.
-    pub fn refresh_available_backends() -> Vec<AudioBackend> {
+    pub fn refresh_available_backends() -> Vec<Backend> {
         let backends = rodio::cpal::available_hosts();
 
         *CACHED_AUDIO_BACKENDS
@@ -457,28 +457,26 @@ impl AudioOutput {
     /// Produces a list of hosts that are currently available on the system.
     ///
     /// The first call enumerates the system backends and caches the result.
-    /// [`AudioOutput::refresh_available_output_devices`] to re-enumerate after the
+    /// [`Output::refresh_available_devices`] to re-enumerate after the
     /// platform reports new hardware.
-    pub fn available_output_devices() -> Vec<AudioDevice> {
+    pub fn available_devices() -> Vec<AudioDevice> {
         let cache = CACHED_OUTPUT_DEVICES.get_or_init(|| Mutex::new(None));
 
         if let Some(devices) = cache.lock().unwrap().clone() {
             return devices;
         }
 
-        Self::refresh_available_output_devices()
+        Self::refresh_available_devices()
     }
 
     /// Re-enumerates the output devices of every current backend, updates the caches, and
     /// returns the fresh list.
-    pub fn refresh_available_output_devices() -> Vec<AudioDevice> {
+    pub fn refresh_available_devices() -> Vec<AudioDevice> {
         let backends = rodio::cpal::available_hosts();
         let default_backend = rodio::cpal::default_host().id();
         let mut devices: Vec<AudioDevice> = backends
             .iter()
-            .flat_map(|backend| {
-                Self::available_output_devices_for_backend(*backend).unwrap_or_default()
-            })
+            .flat_map(|backend| Self::available_devices_for_backend(*backend).unwrap_or_default())
             .collect();
 
         devices.sort_by(|first, second| {
@@ -516,34 +514,34 @@ impl AudioOutput {
 
     /// The label used to represent the system default backend in UI lists.
     ///
-    /// [`AudioOutput::available_backend_labels`] includes this label alongside the available
-    /// backend labels, and [`AudioOutput::parse_preferred_backend_label`] maps it back to
+    /// [`Output::available_backend_labels`] includes this label alongside the available
+    /// backend labels, and [`Output::parse_preferred_backend_label`] maps it back to
     /// `None` (no explicit preference).
     pub const DEFAULT_BACKEND_LABEL: &'static str = "Default";
 
     /// Returns the canonical UI label for an audio backend.
-    pub fn backend_label(backend: AudioBackend) -> String {
+    pub fn backend_label(backend: Backend) -> String {
         format!("{backend:?}")
     }
 
-    /// Parses a backend label produced by [`AudioOutput::backend_label`].
+    /// Parses a backend label produced by [`Output::backend_label`].
     ///
     /// Matching is case-insensitive and ignores surrounding whitespace. Only backends
-    /// reported by [`AudioOutput::available_backends`] are recognized. The default label
-    /// ([`AudioOutput::DEFAULT_BACKEND_LABEL`]) is not a backend and returns `None`; use
-    /// [`AudioOutput::parse_preferred_backend_label`] when `"Default"` should map to `None`
+    /// reported by [`Output::available_backends`] are recognized. The default label
+    /// ([`Output::DEFAULT_BACKEND_LABEL`]) is not a backend and returns `None`; use
+    /// [`Output::parse_available_backend_label`] when `"Default"` should map to `None`
     /// as an explicit preference.
-    pub fn parse_backend_label(label: &str) -> Option<AudioBackend> {
+    pub fn parse_backend_label(label: &str) -> Option<Backend> {
         Self::available_backends()
             .into_iter()
             .find(|backend| Self::backend_label(*backend).eq_ignore_ascii_case(label.trim()))
     }
 
-    /// Parses a label from [`AudioOutput::available_backend_labels`] into a backend preference.
+    /// Parses a label from [`Output::available_backend_labels`] into a backend preference.
     ///
     /// Returns `Some(None)` for the default label, `Some(Some(backend))` for a known backend,
     /// and `None` for an unknown label.
-    pub fn parse_preferred_backend_label(label: &str) -> Option<Option<AudioBackend>> {
+    pub fn parse_available_backend_label(label: &str) -> Option<Option<Backend>> {
         let trimmed = label.trim();
 
         if trimmed.eq_ignore_ascii_case(Self::DEFAULT_BACKEND_LABEL) {
@@ -555,9 +553,9 @@ impl AudioOutput {
 
     /// Returns the UI labels for the default entry plus every available backend.
     ///
-    /// The result is sorted and deduplicated so it can back a settings dropdown directly.
+    /// The result is sorted and deduplicated.
     pub fn available_backend_labels() -> Vec<String> {
-        let mut labels = vec![Self::DEFAULT_BACKEND_LABEL.to_string()];
+        let mut labels: Vec<String> = vec![Self::DEFAULT_BACKEND_LABEL.to_string()];
         labels.extend(
             Self::available_backends()
                 .into_iter()
@@ -584,7 +582,7 @@ impl AudioOutput {
     }
 
     /// Returns the UI label for a backend preference (`None` means the system default).
-    pub fn preferred_backend_label(preferred: Option<AudioBackend>) -> String {
+    pub fn preferred_backend_label(preferred: Option<Backend>) -> String {
         preferred.map_or_else(
             || Self::DEFAULT_BACKEND_LABEL.to_string(),
             Self::backend_label,
@@ -593,10 +591,10 @@ impl AudioOutput {
 
     /// Returns the output devices currently available from a specific audio backend.
     ///
-    /// Unlike [`AudioOutput::available_output_devices`], this always performs a live query
+    /// Unlike [`Output::available_devices`], this always performs a live query
     /// and does not consult the cache.
-    pub fn available_output_devices_for_backend(
-        backend: AudioBackend,
+    pub fn available_devices_for_backend(
+        backend: Backend,
     ) -> Result<Vec<AudioDevice>, AudioOutputError> {
         let host = rodio::cpal::host_from_id(backend)
             .map_err(|source| AudioOutputError::BackendUnavailable { backend, source })?;
@@ -668,7 +666,7 @@ impl AudioOutput {
     ///
     /// Browser targets defer opening the output until playback starts so it can happen in
     /// response to a user gesture.
-    pub fn try_new_with_backend(backend: AudioBackend) -> Result<Self, AudioOutputError> {
+    pub fn try_new_with_backend(backend: Backend) -> Result<Self, AudioOutputError> {
         #[cfg(not(target_arch = "wasm32"))]
         let mixer_device_sink = Some(Self::open_backend_sink(backend)?);
 
@@ -688,13 +686,13 @@ impl AudioOutput {
 
     /// Creates an output for a backend preference without failing.
     ///
-    /// `None` follows the system default ([`AudioOutput::new`]). `Some(backend)` tries to
+    /// `None` follows the system default ([`Output::new`]). `Some(backend)` tries to
     /// open that backend and falls back to a deferred output that remembers the backend
-    /// when opening fails. Deferred outputs report [`AudioOutput::has_audio_output`] as
-    /// `false` until [`AudioOutput::retry_audio_output`] (or [`Nyaa::ensure_audio_output`])
-    /// succeeds, so callers do not need their own `Option<AudioOutput>` plus preference
+    /// when opening fails. Deferred outputs report [`Output::has_output`] as
+    /// `false` until [`Output::retry_output`] (or [`Nyaa::ensure_output`])
+    /// succeeds, so callers do not need their own `Option<Output>` plus preference
     /// state.
-    pub fn new_with_preferred_backend(preferred: Option<AudioBackend>) -> Self {
+    pub fn new_with_preferred_backend(preferred: Option<Backend>) -> Self {
         let Some(backend) = preferred else {
             return Self::new();
         };
@@ -707,10 +705,10 @@ impl AudioOutput {
 
     /// Creates a deferred output that remembers a backend without opening it.
     ///
-    /// The output reports [`AudioOutput::has_audio_output`] as `false` until
-    /// [`AudioOutput::retry_audio_output`] opens it. Use this to record a backend choice
+    /// The output reports [`Output::has_output`] as `false` until
+    /// [`Output::retry_output`] opens it. Use this to record a backend choice
     /// (for example from a settings screen) without grabbing the audio device yet.
-    pub fn new_deferred_with_backend(backend: AudioBackend) -> Self {
+    pub fn new_deferred_with_backend(backend: Backend) -> Self {
         Self {
             mixer_device_sink: Arc::new(Mutex::new(None)),
             backend: Some(backend),
@@ -721,8 +719,8 @@ impl AudioOutput {
     /// Creates a deferred output for a backend preference without opening any device.
     ///
     /// `None` records the system default backend; `Some(backend)` records that backend.
-    /// Playback opens the device lazily via [`AudioOutput::retry_audio_output`].
-    pub fn new_deferred_with_preferred_backend(preferred: Option<AudioBackend>) -> Self {
+    /// Playback opens the device lazily via [`Output::retry_output`].
+    pub fn new_deferred_with_preferred_backend(preferred: Option<Backend>) -> Self {
         let Some(backend) = preferred else {
             let backend = rodio::cpal::default_host().id();
 
@@ -737,13 +735,13 @@ impl AudioOutput {
     }
 
     /// Returns the selected audio backend, or `None` for an output created from a sink.
-    pub fn backend(&self) -> Option<AudioBackend> {
+    pub fn backend(&self) -> Option<Backend> {
         self.backend
     }
 
     /// Returns the selected output device, if one was chosen or resolved.
     ///
-    /// Returns `None` for an output created with [`AudioOutput::from_sink`] or when the
+    /// Returns `None` for an output created with [`Output::from_sink`] or when the
     /// platform did not report a device description.
     pub fn device(&self) -> Option<AudioDevice> {
         self.device.clone()
@@ -753,7 +751,7 @@ impl AudioOutput {
     ///
     /// Returns the backend label with the device name in parentheses when both are known
     /// (for example `"Alsa (Built-in Audio)"`), the backend label alone when no device was
-    /// resolved, and `"Custom"` for an output created with [`AudioOutput::from_sink`].
+    /// resolved, and `"Custom"` for an output created with [`Output::from_sink`].
     pub fn display_name(&self) -> String {
         let Some(backend) = self.backend else {
             return "Custom".to_string();
@@ -770,24 +768,6 @@ impl AudioOutput {
                 }
             },
         )
-    }
-
-    /// Returns whether this output currently has an initialized device sink.
-    ///
-    /// Browser outputs return `false` until playback initializes WebAudio in response to a
-    /// user gesture. Deferred outputs created with
-    /// [`AudioOutput::new_deferred_with_backend`] also return `false` until
-    /// [`AudioOutput::retry_audio_output`] succeeds.
-    pub fn has_audio_output(&self) -> bool {
-        self.has_sink()
-    }
-
-    /// Retries opening this output's selected backend or device.
-    ///
-    /// Does nothing when the sink already exists or when the output was created with
-    /// [`AudioOutput::from_sink`] without a backend or device.
-    pub fn retry_audio_output(&self) -> Result<(), AudioOutputError> {
-        self.retry_sink()
     }
 
     /// Creates a shared output from an existing rodio device sink.
@@ -810,7 +790,7 @@ impl AudioOutput {
         }
     }
 
-    fn open_backend_sink(backend: AudioBackend) -> Result<MixerDeviceSink, AudioOutputError> {
+    fn open_backend_sink(backend: Backend) -> Result<MixerDeviceSink, AudioOutputError> {
         let host = rodio::cpal::host_from_id(backend)
             .map_err(|source| AudioOutputError::BackendUnavailable { backend, source })?;
         let device = host
@@ -825,7 +805,7 @@ impl AudioOutput {
         Ok(sink)
     }
 
-    fn default_device_for_backend(backend: AudioBackend) -> Option<AudioDevice> {
+    fn default_device_for_backend(backend: Backend) -> Option<AudioDevice> {
         let host = rodio::cpal::host_from_id(backend).ok()?;
         let device = host.default_output_device()?;
 
@@ -870,7 +850,11 @@ impl AudioOutput {
         Ok(sink)
     }
 
-    fn retry_sink(&self) -> Result<(), AudioOutputError> {
+    /// Retries opening this output's selected backend or device.
+    ///
+    /// Does nothing when the sink already exists or when the output was created with
+    /// [`Output::from_sink`] without a backend or device.
+    pub fn retry_sink(&self) -> Result<(), AudioOutputError> {
         #[cfg(all(target_arch = "wasm32", feature = "nightly"))]
         crate::patch::ensure_audioworklet_text_polyfill();
 
@@ -889,6 +873,12 @@ impl AudioOutput {
         Ok(())
     }
 
+    /// Returns whether this output currently has an initialized device sink.
+    ///
+    /// Browser outputs return `false` until playback initializes WebAudio in response to a
+    /// user gesture. Deferred outputs created with
+    /// [`Output::new_deferred_with_backend`] also return `false` until
+    /// [`Output::retry_output`] succeeds.
     fn has_sink(&self) -> bool {
         self.mixer_device_sink.lock().unwrap().is_some()
     }
@@ -1311,17 +1301,17 @@ where
 /// rodisnyaa: Painless audio playback for native and web platforms.
 ///
 /// If you are only playing one audio track at a time, you can use [`Nyaa`] directly.
-/// If you want to play multiple tracks simultaneously, create an [`AudioOutput`] and
+/// If you want to play multiple tracks simultaneously, create an [`Output`] and
 /// pass clones to [`Nyaa::new_with_output`].
 ///
 /// Avoid naming a Nyaa instance `player` to prevent confusion with the rodio
 /// [`Player`], instead name it `nyaa` or prefix with `nyaa_`.
 pub struct Nyaa {
     /// The audio output shared by this player.
-    audio_output: AudioOutput,
+    output: Output,
 
     /// The backend this player prefers when opening its output.
-    preferred_backend: Option<AudioBackend>,
+    preferred_backend: Option<Backend>,
 
     /// rodio [`Player`]
     player: Option<Player>,
@@ -1381,7 +1371,7 @@ impl Default for Nyaa {
 impl Nyaa {
     /// Creates a player with its own default audio output.
     pub fn new() -> Self {
-        let mut nyaa = Self::new_with_output(AudioOutput::new());
+        let mut nyaa = Self::new_with_output(Output::new());
         nyaa.preferred_backend = None;
         nyaa
     }
@@ -1389,11 +1379,11 @@ impl Nyaa {
     /// Creates a player and returns an error if its default audio output cannot be opened.
     ///
     /// Browser targets defer opening the output until playback or
-    /// [`Nyaa::retry_audio_output`] so initialization can occur in response to a user gesture.
+    /// [`Nyaa::retry_output`] so initialization can occur in response to a user gesture.
     pub fn try_new() -> Result<Self, AudioOutputError> {
         let backend = rodio::cpal::default_host().id();
-        let audio_output = AudioOutput::try_new_with_backend(backend)?;
-        let mut nyaa = Self::new_with_output(audio_output);
+        let output = Output::try_new_with_backend(backend)?;
+        let mut nyaa = Self::new_with_output(output);
         nyaa.preferred_backend = None;
         Ok(nyaa)
     }
@@ -1401,10 +1391,10 @@ impl Nyaa {
     /// Creates a player for a backend preference, opening the output when possible.
     ///
     /// `None` follows the system default. A backend that cannot be opened is remembered
-    /// as a deferred preference instead of failing, so [`Nyaa::ensure_audio_output`] can
+    /// as a deferred preference instead of failing, so [`Nyaa::ensure_output`] can
     /// retry later without extra caller state.
-    pub fn new_with_preferred_backend(preferred: Option<AudioBackend>) -> Self {
-        let mut nyaa = Self::new_with_output(AudioOutput::new_with_preferred_backend(preferred));
+    pub fn new_with_preferred_backend(preferred: Option<Backend>) -> Self {
+        let mut nyaa = Self::new_with_output(Output::new_with_preferred_backend(preferred));
         nyaa.preferred_backend = preferred;
         nyaa
     }
@@ -1412,10 +1402,10 @@ impl Nyaa {
     /// Creates a player for a backend preference without opening any device.
     ///
     /// `None` follows the system default. The output stays deferred until
-    /// [`Nyaa::ensure_audio_output`] or playback opens it.
-    pub fn new_deferred_with_preferred_backend(preferred: Option<AudioBackend>) -> Self {
+    /// [`Nyaa::ensure_output`] or playback opens it.
+    pub fn new_deferred_with_preferred_backend(preferred: Option<Backend>) -> Self {
         let mut nyaa =
-            Self::new_with_output(AudioOutput::new_deferred_with_preferred_backend(preferred));
+            Self::new_with_output(Output::new_deferred_with_preferred_backend(preferred));
         nyaa.preferred_backend = preferred;
         nyaa
     }
@@ -1423,16 +1413,16 @@ impl Nyaa {
     /// Creates a player connected to a reusable audio output.
     ///
     /// The preferred backend is initialized to the output's backend, so
-    /// [`Nyaa::ensure_audio_output`] keeps using it. Use
+    /// [`Nyaa::ensure_output`] keeps using it. Use
     /// [`Nyaa::new_with_preferred_backend`] or
-    /// [`Nyaa::set_preferred_audio_backend`] to follow the system default (`None`) or to
+    /// [`Nyaa::set_preferred_backend`] to follow the system default (`None`) or to
     /// prefer a different backend without managing extra state.
-    pub fn new_with_output(audio_output: AudioOutput) -> Self {
-        let player = audio_output.connect_player();
-        let preferred_backend = audio_output.backend();
+    pub fn new_with_output(output: Output) -> Self {
+        let player = output.connect_player();
+        let preferred_backend = output.backend();
 
         Self {
-            audio_output,
+            output,
             preferred_backend,
             player,
             duration: Mutex::new(None),
@@ -1458,42 +1448,42 @@ impl Nyaa {
 
     /// Returns the audio backend selected for this player.
     ///
-    /// Returns `None` when the player uses an [`AudioOutput`] created with
-    /// [`AudioOutput::from_sink`].
-    pub fn audio_backend(&self) -> Option<AudioBackend> {
-        self.audio_output.backend()
+    /// Returns `None` when the player uses an [`Output`] created with
+    /// [`Output::from_sink`].
+    pub fn backend(&self) -> Option<Backend> {
+        self.output.backend()
     }
 
     /// Returns the output device selected for this player, if one was chosen or resolved.
     ///
-    /// Returns `None` when the player uses an [`AudioOutput`] created with
-    /// [`AudioOutput::from_sink`] or when the platform did not report a device description.
-    pub fn audio_device(&self) -> Option<AudioDevice> {
-        self.audio_output.device()
+    /// Returns `None` when the player uses an [`Output`] created with
+    /// [`Output::from_sink`] or when the platform did not report a device description.
+    pub fn device(&self) -> Option<AudioDevice> {
+        self.output.device()
     }
 
     /// Returns whether this player currently has an initialized audio output.
     ///
     /// A browser player can return `false` until playback initializes WebAudio in response to a
     /// user gesture. A player with a deferred preferred backend (see
-    /// [`Nyaa::set_preferred_audio_backend`]) also returns `false` until
-    /// [`Nyaa::ensure_audio_output`] opens it.
-    pub fn has_audio_output(&self) -> bool {
-        self.audio_output.has_sink()
+    /// [`Nyaa::set_preferred_backend`]) also returns `false` until
+    /// [`Nyaa::ensure_output`] opens it.
+    pub fn has_output(&self) -> bool {
+        self.output.has_sink()
     }
 
     /// Retries opening this player's selected audio output.
     ///
     /// This can recover a player created by [`Nyaa::new`] after its initial best-effort device
     /// initialization failed.
-    pub fn retry_audio_output(&mut self) -> Result<(), AudioOutputError> {
-        if let Err(error) = self.audio_output.retry_sink() {
+    pub fn retry_output(&mut self) -> Result<(), AudioOutputError> {
+        if let Err(error) = self.output.retry_sink() {
             self.set_playback_state(PlaybackState::Failed);
             return Err(error);
         }
 
         if self.player.is_none() {
-            self.player = self.audio_output.connect_player();
+            self.player = self.output.connect_player();
         }
 
         Ok(())
@@ -1502,9 +1492,9 @@ impl Nyaa {
     /// Returns the backend this player prefers when opening its output.
     ///
     /// `None` means the system default. This is the sticky choice set with
-    /// [`Nyaa::set_preferred_audio_backend`]; it is retained even when opening fails so a
-    /// later [`Nyaa::ensure_audio_output`] can retry without extra caller state.
-    pub fn preferred_audio_backend(&self) -> Option<AudioBackend> {
+    /// [`Nyaa::set_preferred_backend`]; it is retained even when opening fails so a
+    /// later [`Nyaa::ensure_output`] can retry without extra caller state.
+    pub fn preferred_backend(&self) -> Option<Backend> {
         self.preferred_backend
     }
 
@@ -1512,7 +1502,7 @@ impl Nyaa {
     ///
     /// Returns `"Default"` when no explicit backend is preferred.
     pub fn preferred_backend_name(&self) -> String {
-        AudioOutput::preferred_backend_label(self.preferred_backend)
+        Output::preferred_backend_label(self.preferred_backend)
     }
 
     /// Returns a UI-friendly name for this player's output.
@@ -1523,8 +1513,8 @@ impl Nyaa {
     /// mirrors the common wrapper pattern of showing the preference until the device
     /// exists.
     pub fn backend_display_name(&self) -> String {
-        if self.has_audio_output() {
-            self.audio_output.display_name()
+        if self.has_output() {
+            self.output.display_name()
         } else {
             self.preferred_backend_name()
         }
@@ -1535,83 +1525,83 @@ impl Nyaa {
     /// `None` follows the system default. The current source is stopped and its last
     /// reported position is held. The new output is opened immediately when possible and
     /// otherwise left deferred with the preference retained; a later
-    /// [`Nyaa::ensure_audio_output`] (or the next playback, which retries automatically)
-    /// completes the switch. Unlike [`Nyaa::switch_audio_backend`], this never fails, so
+    /// [`Nyaa::ensure_output`] (or the next playback, which retries automatically)
+    /// completes the switch. Unlike [`Nyaa::switch_backend`], this never fails, so
     /// settings UI does not need its own `Option` plus preference state.
     ///
     /// Does nothing when the preference is unchanged and an output backend is already
     /// selected. In particular, re-selecting the current preference never interrupts
-    /// playback, and a custom [`AudioOutput::from_sink`] output is preserved until a
+    /// playback, and a custom [`Output::from_sink`] output is preserved until a
     /// different preference is set.
-    pub fn set_preferred_audio_backend(&mut self, backend: Option<AudioBackend>) {
-        if self.preferred_backend == backend && self.audio_backend().is_some() {
+    pub fn set_preferred_backend(&mut self, backend: Option<Backend>) {
+        if self.preferred_backend == backend && self.backend().is_some() {
             return;
         }
 
         self.stop();
         self.preferred_backend = backend;
-        self.audio_output = AudioOutput::new_with_preferred_backend(backend);
-        self.player = self.audio_output.connect_player();
+        self.output = Output::new_with_preferred_backend(backend);
+        self.player = self.output.connect_player();
     }
 
     /// Remembers a backend preference from a UI label.
     ///
-    /// Accepts [`AudioOutput::DEFAULT_BACKEND_LABEL`] (`"Default"`, case-insensitive) for
+    /// Accepts [`Output::DEFAULT_BACKEND_LABEL`] (`"Default"`, case-insensitive) for
     /// the system default as well as any label from
-    /// [`AudioOutput::available_backend_labels`]. Returns `false` without changing anything
+    /// [`Output::available_backend_labels`]. Returns `false` without changing anything
     /// when the label is unknown.
-    pub fn set_preferred_audio_backend_by_name(&mut self, name: &str) -> bool {
-        let Some(backend) = AudioOutput::parse_preferred_backend_label(name) else {
+    pub fn set_preferred_backend_by_name(&mut self, name: &str) -> bool {
+        let Some(backend) = Output::parse_available_backend_label(name) else {
             return false;
         };
 
-        self.set_preferred_audio_backend(backend);
+        self.set_preferred_backend(backend);
         true
     }
 
     /// Ensures this player's output is initialized for its preferred backend.
     ///
-    /// Aligns a custom [`AudioOutput::from_sink`] output to an explicitly preferred
+    /// Aligns a custom [`Output::from_sink`] output to an explicitly preferred
     /// backend, then retries opening the output when its sink is missing and reconnects
-    /// the player. Returns `Ok` once [`Nyaa::has_audio_output`] is true.
+    /// the player. Returns `Ok` once [`Nyaa::has_output`] is true.
     ///
     /// Call this before playback when the backend may have been chosen while no device
-    /// was open (for example after [`Nyaa::set_preferred_audio_backend`] deferred the
+    /// was open (for example after [`Nyaa::set_preferred_backend`] deferred the
     /// open, or after the device was unplugged). Playback methods already retry
     /// automatically, so this is primarily for warming the output up front or for
     /// surfacing [`AudioOutputError`] outside of playback.
-    pub fn ensure_audio_output(&mut self) -> Result<(), AudioOutputError> {
-        if self.audio_backend().is_none()
+    pub fn ensure_output(&mut self) -> Result<(), AudioOutputError> {
+        if self.backend().is_none()
             && let Some(backend) = self.preferred_backend
         {
             self.stop();
-            self.audio_output = AudioOutput::new_with_preferred_backend(Some(backend));
-            self.player = self.audio_output.connect_player();
+            self.output = Output::new_with_preferred_backend(Some(backend));
+            self.player = self.output.connect_player();
         }
 
-        self.retry_audio_output()
+        self.retry_output()
     }
 
     /// Switches this player to a specific audio backend.
     ///
     /// A successful switch stops the current source, holds its last reported position, and
     /// remembers the backend as the new preference (see
-    /// [`Nyaa::preferred_audio_backend`]). A failed switch leaves the current output and
-    /// preference untouched. Other players that shared the previous [`AudioOutput`] are
+    /// [`Nyaa::preferred_backend`]). A failed switch leaves the current output and
+    /// preference untouched. Other players that shared the previous [`Output`] are
     /// not affected. To remember a backend even when opening fails, use
-    /// [`Nyaa::set_preferred_audio_backend`] instead.
-    pub fn switch_audio_backend(&mut self, backend: AudioBackend) -> Result<(), AudioOutputError> {
-        if self.audio_backend() == Some(backend) {
+    /// [`Nyaa::set_preferred_backend`] instead.
+    pub fn switch_backend(&mut self, backend: Backend) -> Result<(), AudioOutputError> {
+        if self.backend() == Some(backend) {
             self.preferred_backend = Some(backend);
             return Ok(());
         }
 
-        let audio_output = AudioOutput::try_new_with_backend(backend)?;
+        let output = Output::try_new_with_backend(backend)?;
 
         self.stop();
         self.preferred_backend = Some(backend);
-        self.audio_output = audio_output;
-        self.player = self.audio_output.connect_player();
+        self.output = output;
+        self.player = self.output.connect_player();
 
         Ok(())
     }
@@ -1621,27 +1611,27 @@ impl Nyaa {
     ///
     /// A successful switch stops the current source, holds its last reported position, and
     /// remembers the device's backend as the new preference. Other players that shared the
-    /// previous [`AudioOutput`] are not affected. Switching devices also switches the
+    /// previous [`Output`] are not affected. Switching devices also switches the
     /// player's backend to the device's backend.
-    pub fn switch_audio_device(&mut self, device: &AudioDevice) -> Result<(), AudioOutputError> {
-        if self.audio_device().as_ref() == Some(device) {
+    pub fn switch_device(&mut self, device: &AudioDevice) -> Result<(), AudioOutputError> {
+        if self.device().as_ref() == Some(device) {
             self.preferred_backend = Some(device.backend);
             return Ok(());
         }
 
-        let audio_output = AudioOutput::try_new_with_device(device)?;
+        let output = Output::try_new_with_device(device)?;
 
         self.stop();
         self.preferred_backend = Some(device.backend);
-        self.audio_output = audio_output;
-        self.player = self.audio_output.connect_player();
+        self.output = output;
+        self.player = self.output.connect_player();
 
         Ok(())
     }
 
     /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
     pub fn log_on_drop(&mut self, log: bool) {
-        self.audio_output.log_on_drop(log);
+        self.output.log_on_drop(log);
     }
 
     /// Creates a [`Decoder`] from bytes stored in an [`Arc`], which allows multiple players to share the same audio data without copying it onto the heap.
@@ -1746,12 +1736,12 @@ impl Nyaa {
         self.position_is_held = true;
         *self.duration.lock().unwrap() = duration;
 
-        if !self.has_audio_output() {
-            self.retry_audio_output()?;
+        if !self.has_output() {
+            self.retry_output()?;
         }
 
         let new_player = self
-            .audio_output
+            .output
             .connect_player()
             .expect("an initialized audio output must accept players");
         let volume = self.volume();
@@ -1948,7 +1938,7 @@ impl Nyaa {
                 return Ok(());
             }
 
-            self.retry_audio_output()?;
+            self.retry_output()?;
 
             if let Some(bytes) = asset.cached_browser_bytes() {
                 let source = Self::decoder_from_shared_bytes(bytes.clone())
@@ -2150,7 +2140,7 @@ impl Nyaa {
         let volume = self.volume();
         let was_paused = self.is_paused();
 
-        if let Some(new_player) = self.audio_output.connect_player() {
+        if let Some(new_player) = self.output.connect_player() {
             new_player.set_volume(volume);
             new_player.set_speed(self.player_speed());
 
@@ -2207,7 +2197,7 @@ impl Nyaa {
         let volume = self.volume();
 
         let new_player = self
-            .audio_output
+            .output
             .connect_player()
             .expect("an initialized audio output must accept players");
 
@@ -2823,7 +2813,7 @@ mod tests {
 
     #[test]
     fn players_sharing_an_output_keep_independent_state() {
-        let output = AudioOutput::new();
+        let output = Output::new();
         let mut first = Nyaa::new_with_output(output.clone());
         let mut second = Nyaa::new_with_output(output);
 
@@ -2944,8 +2934,8 @@ mod tests {
 
     #[test]
     fn output_device_enumeration_reports_usable_devices() {
-        let backends = AudioOutput::available_backends();
-        let devices = AudioOutput::available_output_devices();
+        let backends = Output::available_backends();
+        let devices = Output::available_devices();
 
         let mut seen_names = std::collections::HashSet::new();
         for device in &devices {
@@ -2986,7 +2976,7 @@ mod tests {
         }
 
         for backend in backends {
-            match AudioOutput::available_output_devices_for_backend(backend) {
+            match Output::available_devices_for_backend(backend) {
                 Ok(backend_devices) => {
                     assert!(
                         backend_devices
@@ -3007,19 +2997,19 @@ mod tests {
 
     #[test]
     fn refreshed_enumeration_populates_the_caches() {
-        let backends = AudioOutput::refresh_available_backends();
-        assert_eq!(AudioOutput::available_backends(), backends);
+        let backends = Output::refresh_available_backends();
+        assert_eq!(Output::available_backends(), backends);
 
-        let devices = AudioOutput::refresh_available_output_devices();
-        assert_eq!(AudioOutput::available_output_devices(), devices);
+        let devices = Output::refresh_available_devices();
+        assert_eq!(Output::available_devices(), devices);
     }
 
     #[test]
     fn switching_to_a_listed_device_selects_it() {
-        let devices = AudioOutput::available_output_devices();
+        let devices = Output::available_devices();
 
         for device in &devices {
-            let Ok(output) = AudioOutput::try_new_with_device(device) else {
+            let Ok(output) = Output::try_new_with_device(device) else {
                 continue;
             };
 
@@ -3027,10 +3017,10 @@ mod tests {
             assert_eq!(output.device().as_ref(), Some(device));
 
             let mut nyaa = Nyaa::new_with_output(output);
-            assert_eq!(nyaa.audio_device().as_ref(), Some(device));
-            assert_eq!(nyaa.audio_backend(), Some(device.backend()));
+            assert_eq!(nyaa.device().as_ref(), Some(device));
+            assert_eq!(nyaa.backend(), Some(device.backend()));
 
-            nyaa.switch_audio_device(device)
+            nyaa.switch_device(device)
                 .expect("switching to the current device should be a no-op");
 
             nyaa.load_static_bytes(TEST_AUDIO_BYTES)
@@ -3042,82 +3032,70 @@ mod tests {
     #[test]
     fn backend_labels_are_canonical_sorted_and_unique() {
         assert_eq!(
-            AudioOutput::canonical_backend_label(" default ").as_deref(),
+            Output::canonical_backend_label(" default ").as_deref(),
             Some("Default")
         );
-        assert_eq!(AudioOutput::canonical_backend_label(""), None);
-        assert_eq!(AudioOutput::canonical_backend_label("not-a-backend"), None);
+        assert_eq!(Output::canonical_backend_label(""), None);
+        assert_eq!(Output::canonical_backend_label("not-a-backend"), None);
 
-        let labels = AudioOutput::available_backend_labels();
+        let labels = Output::available_backend_labels();
         let mut expected = labels.clone();
         expected.sort();
         expected.dedup();
         assert_eq!(labels, expected);
         assert!(labels.iter().any(|label| label == "Default"));
 
-        for backend in AudioOutput::available_backends() {
-            let label = AudioOutput::backend_label(backend);
+        for backend in Output::available_backends() {
+            let label = Output::backend_label(backend);
             assert_eq!(
-                AudioOutput::parse_backend_label(&label.to_lowercase()),
+                Output::parse_backend_label(&label.to_lowercase()),
                 Some(backend)
             );
+            assert_eq!(Output::canonical_backend_label(&label), Some(label.clone()));
             assert_eq!(
-                AudioOutput::canonical_backend_label(&label),
-                Some(label.clone())
-            );
-            assert_eq!(
-                AudioOutput::parse_preferred_backend_label(&label),
+                Output::parse_available_backend_label(&label),
                 Some(Some(backend))
             );
-            assert_eq!(AudioOutput::preferred_backend_label(Some(backend)), label);
+            assert_eq!(Output::preferred_backend_label(Some(backend)), label);
         }
 
+        assert_eq!(Output::parse_available_backend_label("Default"), Some(None));
         assert_eq!(
-            AudioOutput::parse_preferred_backend_label("Default"),
+            Output::parse_available_backend_label(" default "),
             Some(None)
         );
-        assert_eq!(
-            AudioOutput::parse_preferred_backend_label(" default "),
-            Some(None)
-        );
-        assert_eq!(
-            AudioOutput::parse_preferred_backend_label("not-a-backend"),
-            None
-        );
-        assert_eq!(
-            AudioOutput::preferred_backend_label(None),
-            "Default".to_string()
-        );
+        assert_eq!(Output::parse_available_backend_label("not-a-backend"), None);
+        assert_eq!(Output::preferred_backend_label(None), "Default".to_string());
     }
 
     #[test]
     fn preferred_backend_defaults_to_system_default() {
         let nyaa = Nyaa::new();
-        assert_eq!(nyaa.preferred_audio_backend(), None);
+        assert_eq!(nyaa.preferred_backend(), None);
         assert_eq!(nyaa.preferred_backend_name(), "Default");
 
-        let output = AudioOutput::new();
+        let output = Output::new();
         let backend = output.backend();
         let nyaa = Nyaa::new_with_output(output);
-        assert_eq!(nyaa.preferred_audio_backend(), backend);
+        assert_eq!(nyaa.preferred_backend(), backend);
     }
 
     #[test]
     fn setting_preferred_backend_by_name_rejects_unknown_labels() {
         let mut nyaa = Nyaa::new();
 
-        assert!(nyaa.set_preferred_audio_backend_by_name(" default "));
-        assert_eq!(nyaa.preferred_audio_backend(), None);
+        assert!(nyaa.set_preferred_backend_by_name(" default "));
+        assert_eq!(nyaa.preferred_backend(), None);
 
-        if let Some(backend) = AudioOutput::available_backends().into_iter().next() {
-            let label = AudioOutput::backend_label(backend);
-            assert!(nyaa.set_preferred_audio_backend_by_name(&label.to_lowercase()));
-            assert_eq!(nyaa.preferred_audio_backend(), Some(backend));
+        if let Some(backend) = Output::available_backends().into_iter().next() {
+            let label = Output::backend_label(backend);
+            assert!(nyaa.set_preferred_backend_by_name(&label.to_lowercase()));
+            assert_eq!(nyaa.preferred_backend(), Some(backend));
         }
 
-        let before = nyaa.preferred_audio_backend();
-        assert!(!nyaa.set_preferred_audio_backend_by_name("not-a-backend"));
-        assert_eq!(nyaa.preferred_audio_backend(), before);
+        let before = nyaa.preferred_backend();
+        assert!(!nyaa.set_preferred_backend_by_name("not-a-backend"));
+        assert_eq!(nyaa.preferred_backend(), before);
     }
 
     #[test]
@@ -3127,9 +3105,9 @@ mod tests {
             .expect("embedded audio should be playable");
         assert!(nyaa.is_playing());
 
-        let preferred = nyaa.preferred_audio_backend();
-        nyaa.set_preferred_audio_backend(preferred);
-        assert_eq!(nyaa.preferred_audio_backend(), preferred);
+        let preferred = nyaa.preferred_backend();
+        nyaa.set_preferred_backend(preferred);
+        assert_eq!(nyaa.preferred_backend(), preferred);
         assert!(
             nyaa.is_playing(),
             "re-selecting the current preference stopped playback"
@@ -3139,47 +3117,44 @@ mod tests {
     #[test]
     fn switching_backend_remembers_the_new_preference() {
         let mut nyaa = Nyaa::new();
-        let Some(backend) = nyaa.audio_backend() else {
+        let Some(backend) = nyaa.backend() else {
             eprintln!("Skipping preference assertions: no audio backend");
             return;
         };
 
-        nyaa.switch_audio_backend(backend)
+        nyaa.switch_backend(backend)
             .expect("switching to the current backend should be a no-op");
-        assert_eq!(nyaa.preferred_audio_backend(), Some(backend));
-        assert_eq!(nyaa.audio_backend(), Some(backend));
+        assert_eq!(nyaa.preferred_backend(), Some(backend));
+        assert_eq!(nyaa.backend(), Some(backend));
     }
 
     #[test]
     fn deferred_output_opens_lazily_through_ensure() {
-        let backends = AudioOutput::available_backends();
+        let backends = Output::available_backends();
         let Some(backend) = backends.first().copied() else {
             eprintln!("Skipping deferred assertions: no audio backend");
             return;
         };
 
-        let output = AudioOutput::new_deferred_with_backend(backend);
+        let output = Output::new_deferred_with_backend(backend);
         assert_eq!(output.backend(), Some(backend));
-        assert!(!output.has_audio_output());
+        assert!(!output.has_sink());
 
         let mut nyaa = Nyaa::new_with_output(output);
-        assert_eq!(nyaa.preferred_audio_backend(), Some(backend));
-        assert!(!nyaa.has_audio_output());
-        assert_eq!(
-            nyaa.backend_display_name(),
-            AudioOutput::backend_label(backend)
-        );
+        assert_eq!(nyaa.preferred_backend(), Some(backend));
+        assert!(!nyaa.has_output());
+        assert_eq!(nyaa.backend_display_name(), Output::backend_label(backend));
 
-        if nyaa.ensure_audio_output().is_err() {
+        if nyaa.ensure_output().is_err() {
             eprintln!("Skipping deferred open assertions: backend {backend:?} has no device");
             return;
         }
 
-        assert!(nyaa.has_audio_output());
-        assert_eq!(nyaa.audio_backend(), Some(backend));
+        assert!(nyaa.has_output());
+        assert_eq!(nyaa.backend(), Some(backend));
         assert!(
             nyaa.backend_display_name()
-                .contains(&AudioOutput::backend_label(backend))
+                .contains(&Output::backend_label(backend))
         );
 
         nyaa.play_static_bytes(TEST_AUDIO_BYTES)
@@ -3189,20 +3164,20 @@ mod tests {
 
     #[test]
     fn deferred_default_reports_default_until_opened() {
-        let output = AudioOutput::new_deferred_with_preferred_backend(None);
-        assert!(!output.has_audio_output());
+        let output = Output::new_deferred_with_preferred_backend(None);
+        assert!(!output.has_sink());
 
         let mut nyaa = Nyaa::new_deferred_with_preferred_backend(None);
-        assert_eq!(nyaa.preferred_audio_backend(), None);
-        assert!(!nyaa.has_audio_output());
+        assert_eq!(nyaa.preferred_backend(), None);
+        assert!(!nyaa.has_output());
         assert_eq!(nyaa.backend_display_name(), "Default");
 
-        if nyaa.ensure_audio_output().is_err() {
+        if nyaa.ensure_output().is_err() {
             eprintln!("Skipping deferred default assertions: no output device");
             return;
         }
 
-        assert!(nyaa.has_audio_output());
-        assert!(nyaa.backend_display_name() != "Default" || nyaa.audio_backend().is_none());
+        assert!(nyaa.has_output());
+        assert!(nyaa.backend_display_name() != "Default" || nyaa.backend().is_none());
     }
 }
