@@ -146,11 +146,6 @@ pub struct AudioDevice {
 impl std::fmt::Display for AudioDevice {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}", self.description)?;
-
-        if self.is_default {
-            write!(formatter, " [default]")?;
-        }
-
         Ok(())
     }
 }
