@@ -84,13 +84,13 @@ run.
 Enumerate devices for a settings UI, then keep the selected output/player alive:
 
 ```rust
-use rodisnyaa::{AudioDevice, Output, AudioOutputError, Nyaa};
+use rodisnyaa::{Device, Output, AudioOutputError, Nyaa};
 
-fn available_devices() -> Vec<AudioDevice> {
+fn available_devices() -> Vec<Device> {
     Output::available_devices() // Refresh this with `Output::refresh_available_devices()`
 }
 
-fn player_for_device(device: &AudioDevice) -> Result<Nyaa, AudioOutputError> {
+fn player_for_device(device: &Device) -> Result<Nyaa, AudioOutputError> {
     let output = Output::try_new_with_device(device)?;
     Ok(Nyaa::new_with_output(output))
 }

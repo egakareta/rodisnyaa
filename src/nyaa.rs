@@ -102,7 +102,7 @@ pub enum AudioOutputError {
     #[error("audio output device \"{device}\" was not found")]
     DeviceNotFound {
         /// The device that could not be found.
-        device: Box<AudioDevice>,
+        device: Box<Device>,
     },
 
     /// The requested backend's output stream could not be opened.
@@ -119,7 +119,7 @@ pub enum AudioOutputError {
     #[error("failed to open audio output device \"{device}\": {source}")]
     OpenDeviceStream {
         /// The device that was requested.
-        device: Box<AudioDevice>,
+        device: Box<Device>,
         /// The error returned by rodio while opening the output stream.
         #[source]
         source: rodio::stream::DeviceSinkError,
@@ -136,21 +136,21 @@ pub enum AudioOutputError {
 /// to name matching otherwise. A device obtained from enumeration may no longer exist when it is
 /// opened, in which case opening returns [`AudioOutputError::DeviceNotFound`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AudioDevice {
+pub struct Device {
     backend: Backend,
     id: Option<rodio::cpal::DeviceId>,
     description: rodio::cpal::DeviceDescription,
     is_default: bool,
 }
 
-impl std::fmt::Display for AudioDevice {
+impl std::fmt::Display for Device {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}", self.description)?;
         Ok(())
     }
 }
 
-impl AudioDevice {
+impl Device {
     /// Returns the backend that provides this device.
     pub fn backend(&self) -> Backend {
         self.backend
@@ -374,7 +374,7 @@ pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
 pub struct Output {
     mixer_device_sink: Arc<Mutex<Option<MixerDeviceSink>>>,
     backend: Option<Backend>,
-    device: Option<AudioDevice>,
+    device: Option<Device>,
 }
 
 impl Default for Output {
@@ -395,7 +395,7 @@ static CACHED_AUDIO_BACKENDS: OnceLock<Mutex<Option<Vec<Backend>>>> = OnceLock::
 /// Populated on the first [`Output::available_devices`] call and refreshed by
 /// [`Output::refresh_available_devices`]. Caching keeps per-frame UI polling
 /// cheap: device enumeration queries every backend for its device list.
-static CACHED_OUTPUT_DEVICES: OnceLock<Mutex<Option<Vec<AudioDevice>>>> = OnceLock::new();
+static CACHED_OUTPUT_DEVICES: OnceLock<Mutex<Option<Vec<Device>>>> = OnceLock::new();
 
 impl Output {
     /// Opens the default audio output when the platform permits it.
@@ -454,7 +454,7 @@ impl Output {
     /// The first call enumerates the system backends and caches the result.
     /// [`Output::refresh_available_devices`] to re-enumerate after the
     /// platform reports new hardware.
-    pub fn available_devices() -> Vec<AudioDevice> {
+    pub fn available_devices() -> Vec<Device> {
         let cache = CACHED_OUTPUT_DEVICES.get_or_init(|| Mutex::new(None));
 
         if let Some(devices) = cache.lock().unwrap().clone() {
@@ -466,10 +466,10 @@ impl Output {
 
     /// Re-enumerates the output devices of every current backend, updates the caches, and
     /// returns the fresh list.
-    pub fn refresh_available_devices() -> Vec<AudioDevice> {
+    pub fn refresh_available_devices() -> Vec<Device> {
         let backends = rodio::cpal::available_hosts();
         let default_backend = rodio::cpal::default_host().id();
-        let mut devices: Vec<AudioDevice> = backends
+        let mut devices: Vec<Device> = backends
             .iter()
             .flat_map(|backend| Self::available_devices_for_backend(*backend).unwrap_or_default())
             .collect();
@@ -528,7 +528,7 @@ impl Output {
     /// and does not consult the cache.
     pub fn available_devices_for_backend(
         backend: Backend,
-    ) -> Result<Vec<AudioDevice>, AudioOutputError> {
+    ) -> Result<Vec<Device>, AudioOutputError> {
         let host = rodio::cpal::host_from_id(backend)
             .map_err(|source| AudioOutputError::BackendUnavailable { backend, source })?;
         let default_device = host.default_output_device();
@@ -537,7 +537,7 @@ impl Output {
             .as_ref()
             .and_then(|device| device.description().ok())
             .map(|description| description.name().to_string());
-        let mut devices: Vec<AudioDevice> = host
+        let mut devices: Vec<Device> = host
             .output_devices()
             .map_err(|source| AudioOutputError::ListDevices { backend, source })?
             .filter_map(|device| {
@@ -548,13 +548,13 @@ impl Output {
                     }),
                 };
 
-                AudioDevice::from_cpal_device(backend, &device, is_default)
+                Device::from_cpal_device(backend, &device, is_default)
             })
             .collect();
 
         if let Some(default_device) = default_device
             && !devices.iter().any(|device| device.is_default)
-            && let Some(default) = AudioDevice::from_cpal_device(backend, &default_device, true)
+            && let Some(default) = Device::from_cpal_device(backend, &default_device, true)
         {
             devices.push(default);
         }
@@ -573,7 +573,7 @@ impl Output {
     ///
     /// Browser targets defer opening the output until playback starts so it can happen in
     /// response to a user gesture.
-    pub fn try_new_with_device(device: &AudioDevice) -> Result<Self, AudioOutputError> {
+    pub fn try_new_with_device(device: &Device) -> Result<Self, AudioOutputError> {
         #[cfg(not(target_arch = "wasm32"))]
         let mixer_device_sink = Some(Self::open_device_sink(device)?);
 
@@ -667,7 +667,7 @@ impl Output {
     ///
     /// Returns `None` for an output created with [`Output::from_sink`] or when the
     /// platform did not report a device description.
-    pub fn device(&self) -> Option<AudioDevice> {
+    pub fn device(&self) -> Option<Device> {
         self.device.clone()
     }
 
@@ -729,14 +729,14 @@ impl Output {
         Ok(sink)
     }
 
-    fn default_device_for_backend(backend: Backend) -> Option<AudioDevice> {
+    fn default_device_for_backend(backend: Backend) -> Option<Device> {
         let host = rodio::cpal::host_from_id(backend).ok()?;
         let device = host.default_output_device()?;
 
-        AudioDevice::from_cpal_device(backend, &device, true)
+        Device::from_cpal_device(backend, &device, true)
     }
 
-    fn find_backend_device(device: &AudioDevice) -> Result<rodio::cpal::Device, AudioOutputError> {
+    fn find_backend_device(device: &Device) -> Result<rodio::cpal::Device, AudioOutputError> {
         let host = rodio::cpal::host_from_id(device.backend).map_err(|source| {
             AudioOutputError::BackendUnavailable {
                 backend: device.backend,
@@ -761,7 +761,7 @@ impl Output {
             })
     }
 
-    fn open_device_sink(device: &AudioDevice) -> Result<MixerDeviceSink, AudioOutputError> {
+    fn open_device_sink(device: &Device) -> Result<MixerDeviceSink, AudioOutputError> {
         let backend_device = Self::find_backend_device(device)?;
         let mut sink = DeviceSinkBuilder::from_device(backend_device)
             .and_then(|builder| builder.open_sink_or_fallback())
@@ -1356,7 +1356,7 @@ impl Nyaa {
     ///
     /// Returns `None` when the player uses an [`Output`] created with
     /// [`Output::from_sink`] or when the platform did not report a device description.
-    pub fn device(&self) -> Option<AudioDevice> {
+    pub fn device(&self) -> Option<Device> {
         self.output.device()
     }
 
@@ -1501,7 +1501,7 @@ impl Nyaa {
     /// remembers the device's backend as the new preference. Other players that shared the
     /// previous [`Output`] are not affected. Switching devices also switches the
     /// player's backend to the device's backend.
-    pub fn switch_device(&mut self, device: &AudioDevice) -> Result<(), AudioOutputError> {
+    pub fn switch_device(&mut self, device: &Device) -> Result<(), AudioOutputError> {
         if self.device().as_ref() == Some(device) {
             self.preferred_backend = Some(device.backend);
             return Ok(());

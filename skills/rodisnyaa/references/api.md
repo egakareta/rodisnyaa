@@ -133,7 +133,7 @@ refresh/device-change action. Use `available_devices_for_backend(backend)` for a
 backend-specific query.
 
 Open an output with `Output::try_new_with_backend(backend)` or
-`Output::try_new_with_device(&device)`. `AudioDevice` exposes `backend()`, `id()`,
+`Output::try_new_with_device(&device)`. `Device` exposes `backend()`, `id()`,
 `description()`, `name()`, `is_default()`, `device_type()`, and `interface_type()`.
 
 `Nyaa::switch_backend()` and `switch_device()` stop that player's current source and
@@ -161,5 +161,5 @@ Validation requirements:
 
 Return or surface `NyaaError` for file, decode, seek, effect, playback-range, source, output, and
 WASM fetch failures. Handle `AudioOutputError` separately when the UI can recover by refreshing
-devices or choosing another backend. A previously enumerated `AudioDevice` can become stale before
+devices or choosing another backend. A previously enumerated `Device` can become stale before
 it is opened.

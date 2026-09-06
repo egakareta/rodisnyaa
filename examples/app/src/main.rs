@@ -2,7 +2,7 @@ use web_time::Duration;
 
 use eframe::egui;
 use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, AudioAsset, AudioDevice, AudioEffects,
+    format_timestamp_secs, parse_timestamp, AudioAsset, Device, AudioEffects,
     AutomaticGainEffect, Backend, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, Output,
     ReverbEffect, Waveform, WaveformBuilder,
 };
@@ -221,7 +221,7 @@ impl App {
         }
     }
 
-    fn select_device(&mut self, device: &AudioDevice) {
+    fn select_device(&mut self, device: &Device) {
         if let Err(error) = self.nyaa.switch_device(device) {
             log::error!("could not switch audio device: {error}");
             return;
