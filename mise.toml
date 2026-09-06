@@ -14,36 +14,47 @@ rust = { version = "nightly-2026-03-12", components = [
 postinstall = ["lefthook install"]
 
 [tasks.check]
+description = "Run all linting and formatting checks"
 run = "mise lint && mise format:cargo --check && mise format:oxfmt --check"
 
 [tasks.format]
+description = "Format .rs/.toml/.yml"
 depends = ["format:cargo", "format:oxfmt"]
 
 [tasks."format:cargo"]
+description = "Format .rs"
 run = "cargo fmt --all"
 
 [tasks."format:oxfmt"]
+description = "Format .toml/.yml"
 run = "oxfmt"
 
 [tasks.lint]
+description = "Lint .rs"
 run = "cargo clippy --all-targets --all-features --workspace -- -D warnings"
 
 [tasks.test]
+description = "Run .rs tests for native and wasm"
 depends = ["test:native", "test:wasm"]
 
 [tasks."test:native"]
+description = "Run .rs tests for native"
 run = "cargo test -- --nocapture"
 
 [tasks."test:wasm"]
+description = "Run .rs tests for wasm"
 run = "wasm-pack test --headless --chrome -- --lib --test '*' -- --nocapture"
 
 [tasks."bench:native"]
+description = "Run benchmarks for native"
 run = "cargo bench --bench controls"
 
 [tasks."bench:wasm"]
+description = "Run benchmarks for wasm"
 run = "wasm-pack test --release --headless --chrome . --test browser_benches -- --bench --nocapture"
 
 [tasks."serve:examples:app"]
+description = "Serve the example app with Trunk"
 dir = "{{config_root}}/examples/app"
 run = "trunk serve"
 
