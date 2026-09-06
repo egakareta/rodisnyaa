@@ -766,6 +766,70 @@ impl<'a> WaveformSlice<'a> {
     }
 }
 
+/// A summary of a streaming waveform decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaveformDecodeSummary {
+    /// The decoded source sample rate.
+    pub sample_rate: u32,
+
+    /// The total number of finest-resolution peaks emitted through `on_chunk`.
+    pub peak_count: usize,
+}
+
+/// Decodes shared audio bytes into finest-resolution peak amplitudes in bounded chunks.
+///
+/// Each call to `on_chunk` receives the peak offset of the chunk, the chunk amplitudes computed
+/// with [`WaveformPeak::amplitude`], and the source sample rate. Offsets are contiguous: the
+/// first chunk starts at peak `0` and each subsequent offset advances by the previous chunk
+/// length. The callback runs synchronously on the calling thread.
+///
+/// `window_size` is the number of audio frames per peak at the finest resolution and is clamped
+/// to at least `1`. `chunk_peak_count` bounds how many frames are decoded between callbacks and
+/// is clamped to `1..=4096`.
+pub fn decode_audio_to_waveform_streaming<F>(
+    bytes: &[u8],
+    window_size: usize,
+    chunk_peak_count: usize,
+    mut on_chunk: F,
+) -> Result<WaveformDecodeSummary, NyaaError>
+where
+    F: FnMut(usize, Vec<f32>, u32),
+{
+    let source = Nyaa::decoder_from_shared_bytes(Arc::from(bytes))?;
+    let window_size = NonZeroUsize::new(window_size.max(1)).expect("clamped to nonzero");
+    let mut builder = Waveform::builder_from_source_with_base_frames(source, window_size);
+    let sample_rate = builder.sample_rate();
+    let frames_per_chunk = window_size
+        .get()
+        .saturating_mul(chunk_peak_count.clamp(1, 4096));
+    let mut emitted_peak_count = 0usize;
+
+    loop {
+        let finished = builder.advance_frames(frames_per_chunk);
+        let slice = builder.slice(Duration::ZERO..builder.decoded_duration(), usize::MAX);
+        let chunk: Vec<f32> = slice
+            .peaks()
+            .iter()
+            .skip(emitted_peak_count)
+            .take_while(|peak| peak.is_available())
+            .map(|peak| peak.amplitude())
+            .collect();
+        if !chunk.is_empty() {
+            let chunk_len = chunk.len();
+            on_chunk(emitted_peak_count, chunk, sample_rate);
+            emitted_peak_count += chunk_len;
+        }
+        if finished {
+            break;
+        }
+    }
+
+    Ok(WaveformDecodeSummary {
+        sample_rate,
+        peak_count: emitted_peak_count,
+    })
+}
+
 fn duration_from_frames(frames: u64, sample_rate: u32) -> Duration {
     let sample_rate = u64::from(sample_rate);
     let seconds = frames / sample_rate;
@@ -947,5 +1011,81 @@ mod tests {
                 max: 1.5,
             }]
         );
+    }
+
+    #[test]
+    fn streaming_decode_emits_contiguous_amplitude_chunks() {
+        let bytes = mono_pcm16_wav_bytes(8000, &alternating_samples(16, -0.5, 0.5));
+        let mut chunks = Vec::new();
+        let summary = crate::decode_audio_to_waveform_streaming(
+            &bytes,
+            4,
+            2,
+            |offset, amplitudes, sample_rate| {
+                assert_eq!(sample_rate, 8000);
+                chunks.push((offset, amplitudes));
+            },
+        )
+        .expect("valid wav bytes should decode");
+
+        assert_eq!(summary.sample_rate, 8000);
+        assert_eq!(summary.peak_count, 4);
+
+        let mut reassembled = Vec::new();
+        for (index, (offset, amplitudes)) in chunks.iter().enumerate() {
+            assert_eq!(
+                *offset,
+                reassembled.len(),
+                "chunk {index} should continue the peak stream"
+            );
+            assert!(
+                amplitudes.len() <= 2,
+                "chunk {index} should respect the chunk bound"
+            );
+            reassembled.extend_from_slice(amplitudes);
+        }
+        assert_eq!(reassembled.len(), summary.peak_count);
+        assert!(
+            reassembled
+                .iter()
+                .all(|amplitude| (amplitude - 0.5).abs() < 0.002),
+            "unexpected amplitudes: {reassembled:?}"
+        );
+
+        assert!(
+            crate::decode_audio_to_waveform_streaming(b"not audio", 4, 2, |_, _, _| {
+                panic!("invalid audio should not emit chunks")
+            })
+            .is_err(),
+            "invalid audio should report a decode error"
+        );
+    }
+
+    fn alternating_samples(frames: usize, even: f32, odd: f32) -> Vec<f32> {
+        (0..frames)
+            .map(|index| if index % 2 == 0 { even } else { odd })
+            .collect()
+    }
+
+    fn mono_pcm16_wav_bytes(sample_rate: u32, samples: &[f32]) -> Vec<u8> {
+        let data_len = samples.len() * 2;
+        let mut bytes = Vec::with_capacity(44 + data_len);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            let quantized = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            bytes.extend_from_slice(&quantized.to_le_bytes());
+        }
+        bytes
     }
 }
