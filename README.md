@@ -64,6 +64,7 @@ Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/
 
 | Feature         | Enables              |
 | --------------- | -------------------- |
+| `cli` (default) | `rodisnyaa <PATH>`   |
 | `mp3` (default) | MP3 decoding         |
 | `flac`          | FLAC decoding        |
 | `mp4`           | MP4 decoding         |

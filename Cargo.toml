@@ -21,11 +21,17 @@ include = [
 name = "rodisnyaa"
 path = "src/lib.rs"
 
+[[bin]]
+name = "rodisnyaa"
+path = "src/cli.rs"
+required-features = ["cli"]
+
 [[bench]]
 name = "controls"
 harness = false
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"], optional = true }
 cpal = "0.17"
 dasp_sample = "0.11"
 rodio = { version = "0.22", default-features = false, features = [
@@ -38,8 +44,9 @@ thiserror = "2"
 web-time = "1"
 
 [features]
-default = ["mp3", "wav"]
+default = ["cli", "mp3", "wav"]
 asio = ["cpal/asio"]
+cli = ["dep:clap"]
 flac = ["rodio/flac"]
 jack = ["cpal/jack"]
 mp3 = ["rodio/mp3"]
