@@ -6,8 +6,8 @@ Most public types are re-exported at the crate root:
 
 ```rust
 use rodisnyaa::{
-    AudioAsset, AudioEffects, Output, Nyaa, NyaaError, PlaybackEvent, PlaybackState,
-    Waveform,
+    AudioAsset, AudioEffects, Output, Nyaa, NyaaError, NyaaGroup, PlaybackEvent,
+    PlaybackState, Waveform,
 };
 ```
 
@@ -22,6 +22,7 @@ The following public modules are also supported:
 - `Nyaa::new_with_output(output)` (Reuse a selected/shared output): Connects the player to that `Output`.
 - `nyaa.retry_output()` (Recover deferred output): Opens the selected output and marks failures in player state.
 - `nyaa.has_output()` (Inspect output readiness): May be false in a browser before the first gesture-backed playback.
+- `NyaaGroup::new()` (Concurrent sounds): Owns multiple players and applies group configuration and transport to all of them.
 
 Keep a player alive in application state. Dropping it ends its ownership of playback resources.
 
@@ -50,15 +51,35 @@ APIs with `include_bytes!` when avoiding that copy matters.
 `play_range()`. Starting a new source preserves current volume, speed, pitch, effects, looping, and
 configured range.
 
+`NyaaGroup` provides plural loading methods for synchronized playback:
+
+- `NyaaGroup::load_static_bytes()`
+- `NyaaGroup::load_shared_bytes()`
+- `NyaaGroup::load_files()` on native targets
+- `NyaaGroup::load_assets()` across native and browser targets
+
+The `load_*` methods prepare all sources without playback. `group.play()` queues every decoder
+before starting any player. Group volume, speed, pitch, effects, looping, seeking, pause, resume,
+stop, and output-selection methods apply to every current player and future loaded source.
+
+For individually controlled members, use named loading methods such as
+`NyaaGroup::load_static_bytes_keyed([("music", MUSIC), ("ambience", AMBIENCE)])` or add one source with
+`NyaaGroup::add_static_bytes("music", MUSIC)`. Inspect keys with `member_keys()`, access configuration
+with `member_mut("music")`, and control transport with `play_member`, `pause_member`,
+`resume_member`, `stop_member`, and `try_seek_member`. Individual settings made through
+`member_mut` affect only that member.
+
 3. Runtime bytes
 
 - `play_shared_bytes(bytes)`
+- `load_shared_bytes(bytes)`
 - `duration_from_shared_bytes(bytes)`
 - `Waveform::from_shared_bytes(bytes)`/`Waveform::builder_from_shared_bytes(bytes)`
 
 4. Native path plus browser URL
 
 - `play_asset(asset)`/`start_asset_playback(asset)`
+- `load_asset(asset)`
 - `duration_from_asset(asset)`
 - `Waveform::from_asset(asset)`/`Waveform::builder_from_asset(asset)`
 

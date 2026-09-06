@@ -1,6 +1,6 @@
 #![cfg(target_arch = "wasm32")]
 
-use rodisnyaa::{AudioAsset, Nyaa};
+use rodisnyaa::{AudioAsset, Nyaa, NyaaGroup, PlaybackState};
 use std::time::Duration;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
@@ -69,5 +69,27 @@ async fn nyaa_owns_pending_asset_playback_and_duration() {
     assert!(
         nyaa.duration()
             .is_some_and(|duration| duration > Duration::ZERO)
+    );
+}
+
+#[wasm_bindgen_test]
+async fn group_loads_browser_assets_with_shared_configuration() {
+    let first = AudioAsset::new("missing/native/first.wav", WAV_DATA_URL);
+    let second = AudioAsset::new("missing/native/second.wav", WAV_DATA_URL);
+    let mut group = NyaaGroup::new();
+    group.set_volume(0.4);
+
+    group
+        .load_assets([&first, &second])
+        .await
+        .expect("both browser audio assets should load");
+
+    assert_eq!(group.len(), 2);
+    assert!(group.duration().is_some_and(|duration| !duration.is_zero()));
+    assert!(
+        group
+            .players()
+            .iter()
+            .all(|player| player.volume() == 0.4 && player.state() == PlaybackState::Idle)
     );
 }

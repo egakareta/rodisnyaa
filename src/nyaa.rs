@@ -56,6 +56,18 @@ pub enum NyaaError {
     #[error("the playback range must contain audio")]
     InvalidPlaybackRange,
 
+    /// A group member key is empty or contains only whitespace.
+    #[error("group member keys cannot be empty")]
+    InvalidGroupKey,
+
+    /// A group already contains a member with this key.
+    #[error("group member key already exists: {0}")]
+    DuplicateGroupKey(String),
+
+    /// A group does not contain a member with this key.
+    #[error("group member was not found: {0}")]
+    UnknownGroupKey(String),
+
     /// A playback operation required a previously loaded or played source.
     #[error("no audio source is available")]
     NoAudioSource,
@@ -965,7 +977,7 @@ impl Default for AudioEffects {
 }
 
 impl AudioEffects {
-    fn validate(&self) -> Result<(), NyaaError> {
+    pub(crate) fn validate(&self) -> Result<(), NyaaError> {
         if !self.input_gain.is_finite() || self.input_gain < 0.0 {
             return Err(NyaaError::InvalidEffect(
                 "input gain must be finite and non-negative",
@@ -1526,7 +1538,7 @@ impl Nyaa {
         false
     }
 
-    fn replace_output_preserving_playback(
+    pub(crate) fn replace_output_preserving_playback(
         &mut self,
         output: Output,
         preferred_backend: Option<Backend>,
@@ -1656,8 +1668,33 @@ impl Nyaa {
 
     fn play_source_at<S>(
         &mut self,
+        source: S,
+        requested_position: Option<Duration>,
+    ) -> Result<(), NyaaError>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
+        self.queue_source_at(source, requested_position, true)
+    }
+
+    fn prepare_source_at<S>(
+        &mut self,
+        source: S,
+        requested_position: Option<Duration>,
+    ) -> Result<(), NyaaError>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+    {
+        self.queue_source_at(source, requested_position, false)
+    }
+
+    fn queue_source_at<S>(
+        &mut self,
         mut source: S,
         requested_position: Option<Duration>,
+        autoplay: bool,
     ) -> Result<(), NyaaError>
     where
         S: Source + Send + 'static,
@@ -1713,8 +1750,13 @@ impl Nyaa {
 
         new_player.set_volume(volume);
         new_player.set_speed(self.player_speed());
+        if !autoplay {
+            new_player.pause();
+        }
         new_player.append(source);
-        new_player.play();
+        if autoplay {
+            new_player.play();
+        }
 
         self.player = Some(new_player);
         self.current_shared_bytes = None;
@@ -1726,7 +1768,9 @@ impl Nyaa {
         self.position_offset = position;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = false;
-        self.set_playback_state(PlaybackState::Playing);
+        if autoplay {
+            self.set_playback_state(PlaybackState::Playing);
+        }
 
         Ok(())
     }
@@ -1758,6 +1802,57 @@ impl Nyaa {
         }
 
         Err(self.record_failure(NyaaError::NoAudioSource))
+    }
+
+    pub(crate) fn prepare_current_source_at(
+        &mut self,
+        position: Duration,
+    ) -> Result<(), NyaaError> {
+        if let Some(bytes) = self.current_shared_bytes.clone() {
+            let source = Self::decoder_from_shared_bytes(bytes.clone())
+                .map_err(|error| self.record_failure(error))?;
+            self.prepare_source_at(source, Some(position))?;
+            self.current_shared_bytes = Some(bytes);
+            return Ok(());
+        }
+
+        if let Some(bytes) = self.current_static_bytes {
+            let source = Self::decoder_from_static_bytes(bytes)
+                .map_err(|error| self.record_failure(error))?;
+            self.prepare_source_at(source, Some(position))?;
+            self.current_static_bytes = Some(bytes);
+            return Ok(());
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = self.current_file_path.clone() {
+            let source =
+                Self::decoder_from_file(&path).map_err(|error| self.record_failure(error))?;
+            self.prepare_source_at(source, Some(position))?;
+            self.current_file_path = Some(path);
+            return Ok(());
+        }
+
+        Err(self.record_failure(NyaaError::NoAudioSource))
+    }
+
+    pub(crate) fn start_prepared(&self) {
+        if let Some(player) = self.player.as_ref() {
+            player.play();
+            self.set_playback_state(PlaybackState::Playing);
+        }
+    }
+
+    pub(crate) fn cancel_prepared(&mut self) {
+        let position = self.position();
+
+        if let Some(player) = self.player.as_ref() {
+            player.stop();
+        }
+
+        self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
+        self.position_is_held = true;
     }
 
     fn playback_bounds(
@@ -1803,6 +1898,43 @@ impl Nyaa {
         }
     }
 
+    fn reset_loaded_source(&mut self, duration: Option<Duration>) {
+        if let Some(player) = self.player.as_ref() {
+            player.stop();
+        }
+
+        self.current_shared_bytes = None;
+        self.current_static_bytes = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_file_path = None;
+        }
+        self.position_offset = Duration::ZERO;
+        self.player_position_anchor = Duration::ZERO;
+        self.position_is_held = true;
+        *self.duration.lock().unwrap() = duration;
+        self.set_playback_state(PlaybackState::Idle);
+    }
+
+    fn load_shared_arc_bytes(&mut self, bytes: Arc<[u8]>) -> Result<(), NyaaError> {
+        let duration = Self::decoder_from_shared_bytes(bytes.clone())
+            .map_err(|error| self.record_failure(error))?
+            .total_duration();
+
+        self.reset_loaded_source(duration);
+        self.current_shared_bytes = Some(bytes);
+
+        Ok(())
+    }
+
+    /// Loads bytes into this player without starting playback.
+    ///
+    /// The bytes are copied into shared storage so the source can be decoded again for seeking or
+    /// later playback.
+    pub fn load_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
+        self.load_shared_arc_bytes(Arc::from(bytes.as_ref()))
+    }
+
     /// Plays bytes stored in an [`Arc`], which allows multiple players to share the same
     /// audio data without copying it onto the heap.
     pub fn play_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
@@ -1822,21 +1954,8 @@ impl Nyaa {
             .map_err(|error| self.record_failure(error))?
             .total_duration();
 
-        if let Some(player) = self.player.as_ref() {
-            player.stop();
-        }
-
-        self.current_shared_bytes = None;
+        self.reset_loaded_source(duration);
         self.current_static_bytes = Some(bytes);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.current_file_path = None;
-        }
-        self.position_offset = Duration::ZERO;
-        self.player_position_anchor = Duration::ZERO;
-        self.position_is_held = true;
-        *self.duration.lock().unwrap() = duration;
-        self.set_playback_state(PlaybackState::Idle);
 
         Ok(())
     }
@@ -1852,6 +1971,20 @@ impl Nyaa {
         Ok(())
     }
 
+    /// Loads an audio file from its native path without starting playback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
+        let path = path.as_ref().to_path_buf();
+        let duration = Self::decoder_from_file(&path)
+            .map_err(|error| self.record_failure(error))?
+            .total_duration();
+
+        self.reset_loaded_source(duration);
+        self.current_file_path = Some(path);
+
+        Ok(())
+    }
+
     /// Plays an audio asset using its native path.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
@@ -1862,6 +1995,23 @@ impl Nyaa {
         self.current_file_path = Some(path);
 
         Ok(())
+    }
+
+    /// Loads an audio asset using its native path or browser URL without starting playback.
+    pub async fn load_asset(&mut self, asset: &AudioAsset) -> Result<(), NyaaError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.load_file(asset.native_path())
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = asset
+                .load_browser_bytes()
+                .await
+                .map_err(|error| self.record_failure(error))?;
+            self.load_shared_arc_bytes(bytes)
+        }
     }
 
     /// Plays an audio asset using its native path or browser URL.

@@ -38,6 +38,30 @@ fn play_notification(nyaa: &mut Nyaa) -> Result<(), NyaaError> {
 }
 ```
 
+## Synchronized Concurrent Audio
+
+```rust
+use rodisnyaa::{NyaaError, NyaaGroup};
+
+fn play_stems(stems: [&'static [u8]; 3]) -> Result<NyaaGroup, NyaaError> {
+    let mut group = NyaaGroup::new();
+    group.set_volume(0.8);
+    group.load_static_bytes_keyed([
+        ("drums", stems[0]),
+        ("bass", stems[1]),
+        ("lead", stems[2]),
+    ])?;
+    group
+        .member_mut("lead")
+        .expect("lead was loaded")
+        .set_volume(0.6);
+    group.play_member("drums")?; // volume = 0.8
+    group.play_member("bass")?; // volume = 0.8
+    group.play_member("lead")?; // volume = 0.6
+    Ok(group)
+}
+```
+
 ## Cross-Platform Controller
 
 Call `play_from_gesture()` directly from a browser user-event callback and `update()` from the

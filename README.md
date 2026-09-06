@@ -13,7 +13,7 @@ cargo add rodisnyaa
 ## Usage
 
 ```rust,no_run
-use rodisnyaa::{AudioAsset, Nyaa, NyaaError};
+use rodisnyaa::{AudioAsset, Nyaa, NyaaError, NyaaGroup};
 
 fn main() -> Result<(), NyaaError> {
     let mut nyaa = Nyaa::new();
@@ -23,13 +23,14 @@ fn main() -> Result<(), NyaaError> {
 
     // Play an audio file from path
     nyaa.play_file("audio.mp3")?;
-    nyaa.wait_until_end();
 
     // Make it 25% faster
     nyaa.set_speed(1.25);
 
     // Seek to 30 seconds
     nyaa.try_seek_secs(30.0)?;
+
+    nyaa.wait_until_end();
     Ok(())
 }
 
@@ -51,6 +52,33 @@ fn play_my_audio_cross_platform() -> Result<(), NyaaError> {
     let asset = AudioAsset::new("assets/music.mp3", "audio.mp3");
     let mut nyaa = Nyaa::new();
     nyaa.start_asset_playback(&asset)?;
+    Ok(())
+}
+
+fn play_stems(stems: [&'static [u8]; 3]) -> Result<(), NyaaError> {
+    let mut group = NyaaGroup::new();
+    group.set_volume(0.8);
+    group.try_set_speed(1.25)?;
+
+    // Give each source a stable key
+    group.load_static_bytes_keyed([
+        ("drums", stems[0]),
+        ("bass", stems[1]),
+        ("lead", stems[2]),
+    ])?;
+
+    // Tune and start only the members you want
+    group
+        .member_mut("lead")
+        .expect("lead was just loaded")
+        .set_volume(0.6);
+    group.play_member("drums")?; // volume = 0.8
+    group.play_member("bass")?; // volume = 0.8
+
+    // These controls affect selected members only
+    group.pause_member("drums")?;
+    group.try_seek_member("bass", std::time::Duration::from_secs(30))?;
+    group.resume_member("drums")?;
     Ok(())
 }
 ```
@@ -84,6 +112,7 @@ Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/
 4. rodio does not officially support AudioWorklet while CPAL does.
 5. No convenience code in rodio for native and web audio resource handling, causing a ton of `#[cfg(target_arch = "wasm32")]`.
 6. No waveform visualization.
+7. Concurrent playback requires callers to own and synchronize a collection of players.
 
 ## Development
 

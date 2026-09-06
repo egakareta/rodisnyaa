@@ -4,11 +4,13 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+mod group;
 mod nyaa;
 pub mod patch;
 mod waveform;
 pub mod wsola;
 
+pub use group::*;
 pub use nyaa::*;
 pub use waveform::*;
 
