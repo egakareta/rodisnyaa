@@ -553,7 +553,7 @@ impl App {
         match waveform.prioritize(waveform_range.clone()) {
             Ok(()) if !waveform.is_finished() => {
                 waveform.advance_frames(waveform.sample_rate() as usize);
-                ui.ctx().request_repaint_after(Duration::from_millis(16));
+                ui.ctx().request_repaint();
             }
             Ok(()) => {}
             Err(error) => log::error!("could not prioritize waveform decoding: {error}"),
@@ -674,15 +674,9 @@ impl eframe::App for App {
             log::error!("could not play audio: {error}");
         }
 
-        if self.nyaa.is_loading() {
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        if self.nyaa.is_loading() || self.nyaa.is_playing() {
+            ui.ctx().request_repaint();
         }
-
-        if self.nyaa.is_playing() {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
-
-        ui.ctx().request_repaint_after(Duration::from_millis(250));
 
         egui::Panel::top("top_panel").show(ui, |ui| {
             let fps = ui.ctx().input(|input| 1.0 / f64::from(input.unstable_dt));
@@ -1028,8 +1022,7 @@ impl eframe::App for App {
                                     .on_hover_text("Use WSOLA for tempo changes")
                                     .changed()
                                 {
-                                    if let Err(error) =
-                                        self.nyaa.set_preserve_pitch(preserve_pitch)
+                                    if let Err(error) = self.nyaa.set_preserve_pitch(preserve_pitch)
                                     {
                                         log::error!("could not change pitch preservation: {error}");
                                     }
