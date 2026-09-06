@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -23,5 +23,35 @@ jobs:
       - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
       - run: mise check
+  test-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libasound2-dev libjack-jackd2-dev libudev-dev pkg-config
+          version: 1.0
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Set up dummy audio device
+        run: |
+          sudo modprobe snd-dummy
+          cat /proc/asound/cards
+          aplay -L
       - run: mise test:native
+  test-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libasound2-dev libjack-jackd2-dev libudev-dev pkg-config
+          version: 1.0
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Set up dummy audio device
+        run: |
+          sudo modprobe snd-dummy
+          cat /proc/asound/cards
+          aplay -L
       - run: mise test:wasm
