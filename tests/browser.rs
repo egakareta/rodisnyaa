@@ -88,7 +88,7 @@ async fn group_loads_browser_assets_with_shared_configuration() {
     assert!(group.duration().is_some_and(|duration| !duration.is_zero()));
     assert!(
         group
-            .players()
+            .members()
             .iter()
             .all(|player| player.volume() == 0.4 && player.state() == PlaybackState::Idle)
     );
