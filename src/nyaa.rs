@@ -2524,6 +2524,11 @@ impl Nyaa {
         }
     }
 
+    /// Attempts to resume playback of a paused player or a stopped player that retains its source.
+    pub fn try_resume(&mut self) -> Result<(), NyaaError> {
+        self.try_play_at(self.position())
+    }
+
     /// Stops the sink by emptying the queue.
     pub fn stop(&mut self) {
         let position = self.position();
@@ -2542,6 +2547,67 @@ impl Nyaa {
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         self.set_playback_state(PlaybackState::Idle);
+    }
+
+    /// Returns whether this player retains an audio source.
+    ///
+    /// Returns `true` while a source is loaded, playing, paused, stopped with
+    /// [`Nyaa::stop_preserving_source`], or ended. Returns `false` when no source
+    /// has been loaded or played, or after [`Nyaa::stop`] clears the source.
+    pub fn has_source(&self) -> bool {
+        self.has_current_source()
+    }
+
+    /// Stops playback but retains the source, metadata, and position.
+    ///
+    /// Like [`Nyaa::stop`], this empties playback, holds the reported position, and
+    /// moves to [`PlaybackState::Idle`]. Unlike `stop`, it keeps the loaded source
+    /// handles and duration so [`Nyaa::play_at`] or [`Nyaa::play_range`] can rebuild
+    /// playback without reloading.
+    pub fn stop_preserving_source(&mut self) {
+        let position = self.position();
+
+        if let Some(player) = self.player.as_ref() {
+            player.stop();
+        }
+
+        self.position_offset = position;
+        self.player_position_anchor = Duration::ZERO;
+        self.position_is_held = true;
+        self.set_playback_state(PlaybackState::Idle);
+    }
+
+    /// Seeks to `position` and starts playback.
+    ///
+    /// If a source is actively playing or paused, this seeks in place and resumes
+    /// playing. Otherwise, if a source was loaded, stopped with
+    /// [`Nyaa::stop_preserving_source`], or ended, this rebuilds playback from the
+    /// retained source at `position`.
+    ///
+    /// The requested position is clamped to the known duration and the configured
+    /// playback bounds (see [`Nyaa::set_loop_range`]).
+    ///
+    /// Returns [`NyaaError::NoAudioSource`] when no source is available.
+    pub fn try_play_at(&mut self, position: Duration) -> Result<(), NyaaError> {
+        if !self.has_current_source() {
+            return Err(self.record_failure(NyaaError::NoAudioSource));
+        }
+
+        let duration = self.duration();
+        let (range_start, range_end) = self
+            .playback_bounds(duration)
+            .map_err(|error| self.record_failure(error))?;
+        let position = range_end.map_or(position.max(range_start), |end| {
+            position.clamp(range_start, end)
+        });
+
+        if (self.is_playing() || self.is_paused()) && self.player.is_some() {
+            self.try_seek(position)?;
+            self.resume();
+            return Ok(());
+        }
+
+        self.play_current_source_at(position)
     }
 
     /// Changes the volume of the sound.
