@@ -2,8 +2,7 @@
 //!
 //! Upstream from <https://github.com/axel10/rodio-wsola>
 
-use rodio::Source;
-use rodio::source::SeekError;
+use rodio::{Source, source::SeekError};
 use web_time::Duration;
 
 fn get_symmetric_hanning_window(window_length: usize) -> Vec<f32> {
