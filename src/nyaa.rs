@@ -56,6 +56,10 @@ pub enum NyaaError {
     #[error("the playback range must contain audio")]
     InvalidPlaybackRange,
 
+    /// The seek position is NaN, infinite, or negative.
+    #[error("the seek position must be a finite non-negative number")]
+    InvalidSeekPosition,
+
     /// A group member key is empty or contains only whitespace.
     #[error("group member keys cannot be empty")]
     InvalidGroupKey,
@@ -2450,6 +2454,10 @@ impl Nyaa {
 
     /// Convenience version of [`Nyaa::try_seek()`] that accepts the position in seconds.
     pub fn try_seek_secs(&mut self, position_secs: f64) -> Result<(), NyaaError> {
+        if position_secs.is_nan() || position_secs.is_infinite() || position_secs < 0.0 {
+            return Err(self.record_failure(NyaaError::InvalidSeekPosition));
+        }
+
         self.try_seek(Duration::from_secs_f64(position_secs))
     }
 
