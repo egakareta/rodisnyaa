@@ -409,12 +409,28 @@ static CACHED_AUDIO_BACKENDS: OnceLock<Mutex<Option<Vec<Backend>>>> = OnceLock::
 /// cheap: device enumeration queries every backend for its device list.
 static CACHED_OUTPUT_DEVICES: OnceLock<Mutex<Option<Vec<Device>>>> = OnceLock::new();
 
+/// Process-wide preferred audio backend for newly created outputs.
+///
+/// `None` (the default) means the system default. Use
+/// [`Output::set_global_preferred_backend`] to change it. [`Output::new`],
+/// [`Output::new_deferred`], and [`Output::new_with_preferred_backend`] resolve
+/// a `None` preference through this value, so setting it affects future
+/// outputs, players, and groups. Existing instances are unaffected; use
+/// [`switch_outputs_to_global_backend`], [`switch_players_to_global_backend`](crate::switch_players_to_global_backend),
+/// or the per-type `switch_to_global_backend` helpers to move them.
+static GLOBAL_PREFERRED_BACKEND: OnceLock<Mutex<Option<Backend>>> = OnceLock::new();
+
 impl Output {
     /// Opens the default audio output when the platform permits it.
     ///
-    /// Browser targets defer opening the output until playback starts so it can happen in
-    /// response to a user gesture.
+    /// Follows [`Output::global_preferred_backend`] when one is set, otherwise
+    /// uses the system default. Browser targets defer opening the output until
+    /// playback starts so it can happen in response to a user gesture.
     pub fn new() -> Self {
+        if let Some(backend) = Self::global_preferred_backend() {
+            return Self::new_with_preferred_backend(Some(backend));
+        }
+
         let backend = Some(rodio::cpal::default_host().id());
         let device = backend.and_then(Self::default_device_for_backend);
         #[cfg(not(target_arch = "wasm32"))]
@@ -631,9 +647,10 @@ impl Output {
 
     /// Creates an output for a backend preference without failing.
     ///
-    /// `None` follows the system default ([`Output::new`]). `Some(backend)` tries to
-    /// open that backend and falls back to a deferred output that remembers the backend
-    /// when opening fails. Deferred outputs report [`Output::has_output`] as
+    /// `None` follows the process default: [`Output::global_preferred_backend`]
+    /// when one is set, otherwise the system default ([`Output::new`]).
+    /// `Some(backend)` tries to open that backend and falls back to a deferred
+    /// output that remembers the backend when opening fails. Deferred outputs report [`Output::has_output`] as
     /// `false` until [`Output::retry_output`] (or [`Nyaa::ensure_output`])
     /// succeeds, so callers do not need their own `Option<Output>` plus preference
     /// state.
@@ -650,24 +667,113 @@ impl Output {
 
     /// Creates a deferred output for a backend preference without opening any device.
     ///
-    /// `None` records the system default backend; `Some(backend)` records that backend.
+    /// `None` records the process default: [`Output::global_preferred_backend`]
+    /// when one is set, otherwise the system default backend;
+    /// `Some(backend)` records that backend.
     /// Playback opens the device lazily via [`Output::retry_output`].
     pub fn new_deferred(preferred: Option<Backend>) -> Self {
-        let Some(backend) = preferred else {
-            let backend = rodio::cpal::default_host().id();
-
-            return Self {
-                mixer_device_sink: Arc::new(Mutex::new(None)),
-                backend: Some(backend),
-                device: Self::default_device_for_backend(backend),
-            };
-        };
+        let backend = preferred
+            .or_else(Self::global_preferred_backend)
+            .unwrap_or_else(|| rodio::cpal::default_host().id());
 
         Self {
             mixer_device_sink: Arc::new(Mutex::new(None)),
             backend: Some(backend),
             device: Self::default_device_for_backend(backend),
         }
+    }
+
+    /// Returns the process-wide preferred backend for newly created outputs.
+    ///
+    /// `None` (the default) means the system default. See
+    /// [`Output::set_global_preferred_backend`].
+    pub fn global_preferred_backend() -> Option<Backend> {
+        *GLOBAL_PREFERRED_BACKEND
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap()
+    }
+
+    /// Sets the process-wide preferred backend for newly created outputs.
+    ///
+    /// `None` restores the system default. [`Output::new`] and
+    /// [`Output::new_deferred`] resolve a `None` preference through this value,
+    /// so it affects future outputs, players, and groups. Existing instances
+    /// are unaffected; use [`switch_outputs_to_global_backend`] or the
+    /// per-type `switch_to_global_backend` helpers to move them.
+    pub fn set_global_preferred_backend(backend: Option<Backend>) {
+        *GLOBAL_PREFERRED_BACKEND
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = backend;
+    }
+
+    /// Clears the process-wide preferred backend, restoring the system default.
+    ///
+    /// Equivalent to [`Output::set_global_preferred_backend`] with `None`.
+    pub fn clear_global_preferred_backend() {
+        Self::set_global_preferred_backend(None);
+    }
+
+    /// Sets the process-wide preferred backend using [`Output::parse_backend_label`].
+    ///
+    /// Returns `false` without changing anything when the label is unknown.
+    pub fn set_global_preferred_backend_by_name(name: &str) -> bool {
+        let Some(backend) = Self::parse_backend_label(name) else {
+            return false;
+        };
+
+        Self::set_global_preferred_backend(Some(backend));
+        true
+    }
+
+    /// Returns the UI label for the process-wide backend preference.
+    ///
+    /// Returns the global preference label when one is set, otherwise the
+    /// system default backend label. Suitable for settings UIs.
+    pub fn global_preferred_backend_name() -> String {
+        Self::backend_label(
+            Self::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id()),
+        )
+    }
+
+    /// Switches this output to a specific audio backend.
+    ///
+    /// Does nothing when already on that backend. Otherwise replaces this
+    /// output with a newly opened one; outputs cloned from this output before
+    /// the switch keep using the previous sink.
+    pub fn switch_backend(&mut self, backend: Backend) -> Result<(), AudioOutputError> {
+        if self.backend == Some(backend) {
+            return Ok(());
+        }
+
+        *self = Self::try_new_with_backend(backend)?;
+        Ok(())
+    }
+
+    /// Switches this output to a specific output device.
+    ///
+    /// Does nothing when already on that device. Otherwise replaces this
+    /// output with a newly opened one; outputs cloned from this output before
+    /// the switch keep using the previous sink. Switching devices also
+    /// switches the output's backend to the device's backend.
+    pub fn switch_device(&mut self, device: &Device) -> Result<(), AudioOutputError> {
+        if self.device.as_ref() == Some(device) {
+            return Ok(());
+        }
+
+        *self = Self::try_new_with_device(device)?;
+        Ok(())
+    }
+
+    /// Switches this output to the process-wide preferred backend.
+    ///
+    /// Uses [`Output::global_preferred_backend`] when one is set, otherwise
+    /// the system default backend.
+    pub fn switch_to_global_backend(&mut self) -> Result<(), AudioOutputError> {
+        let backend =
+            Self::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id());
+        self.switch_backend(backend)
     }
 
     /// Returns the selected audio backend, or `None` for an output created from a sink.
@@ -833,6 +939,122 @@ impl Output {
             mixer_device_sink.log_on_drop(log);
         }
     }
+}
+
+/// Switches every output to one newly opened backend.
+///
+/// This is a convenience for consumers that own several outputs and do not
+/// want to switch each one manually. Stops at the first failure; earlier
+/// outputs remain switched. When the backend cannot be opened, the first
+/// output fails without switching anything.
+pub fn switch_outputs_to_backend<'a>(
+    outputs: impl IntoIterator<Item = &'a mut Output>,
+    backend: Backend,
+) -> Result<(), AudioOutputError> {
+    for output in outputs {
+        output.switch_backend(backend)?;
+    }
+
+    Ok(())
+}
+
+/// Switches every output to one newly opened output device.
+///
+/// This is a convenience for consumers that own several outputs and do not
+/// want to switch each one manually. Stops at the first failure; earlier
+/// outputs remain switched.
+pub fn switch_outputs_to_device<'a>(
+    outputs: impl IntoIterator<Item = &'a mut Output>,
+    device: &Device,
+) -> Result<(), AudioOutputError> {
+    for output in outputs {
+        output.switch_device(device)?;
+    }
+
+    Ok(())
+}
+
+/// Switches every output to the process-wide preferred backend.
+///
+/// Uses [`Output::global_preferred_backend`] when one is set, otherwise the
+/// system default backend. See [`switch_outputs_to_backend`] for failure
+/// semantics.
+pub fn switch_outputs_to_global_backend<'a>(
+    outputs: impl IntoIterator<Item = &'a mut Output>,
+) -> Result<(), AudioOutputError> {
+    let backend =
+        Output::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id());
+    switch_outputs_to_backend(outputs, backend)
+}
+
+/// Switches every player to one newly opened backend.
+///
+/// This is a convenience for consumers that own several players and do not
+/// want to switch each one manually. Each player keeps its source and
+/// position (see [`Nyaa::switch_backend`]). Stops at the first failure;
+/// earlier players remain switched. When the backend cannot be opened, the
+/// first player fails without switching anything.
+pub fn switch_players_to_backend<'a>(
+    players: impl IntoIterator<Item = &'a mut Nyaa>,
+    backend: Backend,
+) -> Result<(), AudioOutputError> {
+    for player in players {
+        player.switch_backend(backend)?;
+    }
+
+    Ok(())
+}
+
+/// Switches every player to one newly opened output device.
+///
+/// This is a convenience for consumers that own several players and do not
+/// want to switch each one manually. Each player keeps its source and
+/// position (see [`Nyaa::switch_device`]). Stops at the first failure;
+/// earlier players remain switched.
+pub fn switch_players_to_device<'a>(
+    players: impl IntoIterator<Item = &'a mut Nyaa>,
+    device: &Device,
+) -> Result<(), AudioOutputError> {
+    for player in players {
+        player.switch_device(device)?;
+    }
+
+    Ok(())
+}
+
+/// Switches every player to the process-wide preferred backend.
+///
+/// Uses [`Output::global_preferred_backend`] when one is set, otherwise the
+/// system default backend. See [`switch_players_to_backend`] for failure
+/// semantics.
+pub fn switch_players_to_global_backend<'a>(
+    players: impl IntoIterator<Item = &'a mut Nyaa>,
+) -> Result<(), AudioOutputError> {
+    let backend =
+        Output::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id());
+    switch_players_to_backend(players, backend)
+}
+
+/// Remembers a backend preference for every player without failing.
+///
+/// Equivalent to calling [`Nyaa::set_preferred_backend`] on each player.
+/// `None` follows the process default (see [`Output::global_preferred_backend`]).
+pub fn set_players_preferred_backend<'a>(
+    players: impl IntoIterator<Item = &'a mut Nyaa>,
+    backend: Option<Backend>,
+) {
+    for player in players {
+        player.set_preferred_backend(backend);
+    }
+}
+
+/// Remembers the process-wide preferred backend for every player without failing.
+///
+/// Equivalent to calling [`Nyaa::set_preferred_backend_to_global`] on each player.
+pub fn set_players_preferred_backend_to_global<'a>(
+    players: impl IntoIterator<Item = &'a mut Nyaa>,
+) {
+    set_players_preferred_backend(players, Output::global_preferred_backend());
 }
 
 /// Settings for a rodio low-pass or high-pass filter.
@@ -1520,6 +1742,26 @@ impl Nyaa {
         self.replace_output_preserving_playback(output, Some(device.backend));
 
         Ok(())
+    }
+
+    /// Switches this player to the process-wide preferred backend.
+    ///
+    /// Uses [`Output::global_preferred_backend`] when one is set, otherwise
+    /// the system default backend. See [`Nyaa::switch_backend`] for playback
+    /// preservation and failure semantics.
+    pub fn switch_to_global_backend(&mut self) -> Result<(), AudioOutputError> {
+        let backend =
+            Output::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id());
+        self.switch_backend(backend)
+    }
+
+    /// Remembers the process-wide preferred backend without failing.
+    ///
+    /// Equivalent to [`Nyaa::set_preferred_backend`] with
+    /// [`Output::global_preferred_backend`]. `None` (no global preference)
+    /// follows the system default.
+    pub fn set_preferred_backend_to_global(&mut self) {
+        self.set_preferred_backend(Output::global_preferred_backend());
     }
 
     fn has_current_source(&self) -> bool {
@@ -3348,5 +3590,243 @@ mod tests {
         nyaa.play_static_bytes(TEST_AUDIO_BYTES)
             .expect("deferred output should play after ensure");
         assert!(nyaa.is_playing());
+    }
+
+    static GLOBAL_PREFERENCE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_isolated_global_preference(test: impl FnOnce()) {
+        let _guard = GLOBAL_PREFERENCE_TEST_LOCK.lock().unwrap();
+        let previous = Output::global_preferred_backend();
+        Output::clear_global_preferred_backend();
+
+        test();
+
+        Output::set_global_preferred_backend(previous);
+    }
+
+    fn current_test_backend() -> Option<Backend> {
+        Output::available_backends()
+            .into_iter()
+            .next()
+            .or_else(|| Some(rodio::cpal::default_host().id()))
+    }
+
+    #[test]
+    fn global_preferred_backend_roundtrip_and_new_outputs_follow_it() {
+        with_isolated_global_preference(|| {
+            assert_eq!(Output::global_preferred_backend(), None);
+
+            let Some(backend) = current_test_backend() else {
+                eprintln!("Skipping global assertions: no audio backend");
+                return;
+            };
+
+            Output::set_global_preferred_backend(Some(backend));
+            assert_eq!(Output::global_preferred_backend(), Some(backend));
+            assert_eq!(
+                Output::global_preferred_backend_name(),
+                Output::backend_label(backend)
+            );
+
+            // Deferred outputs record the global preference without opening a
+            // device. `Output::new`, `Nyaa::new`, and `NyaaGroup::new` delegate
+            // to the same preference, so one real open covers them.
+            assert_eq!(Output::new_deferred(None).backend(), Some(backend));
+            assert_eq!(Output::new().backend(), Some(backend));
+
+            Output::clear_global_preferred_backend();
+            assert_eq!(Output::global_preferred_backend(), None);
+        });
+    }
+
+    #[test]
+    fn global_preferred_backend_by_name_accepts_known_labels() {
+        with_isolated_global_preference(|| {
+            if let Some(backend) = Output::available_backends().into_iter().next() {
+                let label = Output::backend_label(backend);
+                assert!(Output::set_global_preferred_backend_by_name(
+                    &label.to_lowercase()
+                ));
+                assert_eq!(Output::global_preferred_backend(), Some(backend));
+            }
+
+            let before = Output::global_preferred_backend();
+            assert!(!Output::set_global_preferred_backend_by_name(
+                "not-a-backend"
+            ));
+            assert_eq!(Output::global_preferred_backend(), before);
+        });
+    }
+
+    #[test]
+    fn switching_many_outputs_to_the_same_backend_succeeds() {
+        with_isolated_global_preference(|| {
+            // Deferred outputs carry backend metadata without opening a device,
+            // so same-backend batch switches stay no-ops and do not consume
+            // real audio streams.
+            let mut first = Output::new_deferred(None);
+            let mut second = Output::new_deferred(None);
+            let mut third = Output::new_deferred(None);
+            let Some(backend) = first.backend() else {
+                eprintln!("Skipping batch assertions: no audio backend");
+                return;
+            };
+
+            switch_outputs_to_backend([&mut first, &mut second, &mut third], backend)
+                .expect("switching every output to one backend should succeed");
+            assert!(
+                [&first, &second, &third]
+                    .iter()
+                    .all(|output| output.backend() == Some(backend))
+            );
+
+            first
+                .switch_to_global_backend()
+                .expect("a cleared global preference should resolve to the system default");
+            assert!(first.backend().is_some());
+
+            Output::set_global_preferred_backend(Some(backend));
+            switch_outputs_to_global_backend([&mut second, &mut third])
+                .expect("switching every output to the global backend should succeed");
+            assert_eq!(second.backend(), Some(backend));
+            assert_eq!(third.backend(), Some(backend));
+        });
+    }
+
+    #[test]
+    fn switching_many_players_to_the_same_backend_preserves_sources() {
+        with_isolated_global_preference(|| {
+            // Players on deferred outputs switch no-op paths without opening
+            // real devices, keeping parallel audio tests hermetic.
+            let mut first = Nyaa::new_with_output(Output::new_deferred(None));
+            let mut second = Nyaa::new_with_output(Output::new_deferred(None));
+            let Some(backend) = first.backend() else {
+                eprintln!("Skipping batch assertions: no audio backend");
+                return;
+            };
+            first
+                .load_static_bytes(TEST_AUDIO_BYTES)
+                .expect("embedded audio should be loadable");
+            second
+                .load_static_bytes(TEST_AUDIO_BYTES)
+                .expect("embedded audio should be loadable");
+
+            switch_players_to_backend([&mut first, &mut second], backend)
+                .expect("switching every player to one backend should succeed");
+            for player in [&first, &second] {
+                assert_eq!(player.backend(), Some(backend));
+                assert_eq!(player.preferred_backend(), Some(backend));
+                assert!(player.duration().is_some());
+                assert_eq!(player.position(), Duration::ZERO);
+            }
+
+            Output::set_global_preferred_backend(Some(backend));
+            switch_players_to_global_backend([&mut first, &mut second])
+                .expect("switching every player to the global backend should succeed");
+            assert!(
+                [&first, &second]
+                    .iter()
+                    .all(|player| player.backend() == Some(backend))
+            );
+
+            set_players_preferred_backend([&mut first, &mut second], Some(backend));
+            assert!(
+                [&first, &second]
+                    .iter()
+                    .all(|player| player.preferred_backend() == Some(backend))
+            );
+            assert!(
+                [&first, &second]
+                    .iter()
+                    .all(|player| player.duration().is_some())
+            );
+
+            set_players_preferred_backend_to_global([&mut first, &mut second]);
+            assert!(
+                [&first, &second]
+                    .iter()
+                    .all(|player| player.preferred_backend() == Some(backend))
+            );
+
+            let mut third = Nyaa::new_with_output(Output::new_deferred(None));
+            third.set_preferred_backend_to_global();
+            assert_eq!(third.preferred_backend(), Some(backend));
+            third
+                .switch_to_global_backend()
+                .expect("switching one player to the global backend should succeed");
+            assert_eq!(third.backend(), Some(backend));
+        });
+    }
+
+    #[test]
+    fn switching_many_players_to_the_current_device_is_a_noop() {
+        with_isolated_global_preference(|| {
+            let Some(device) = Output::new_deferred(None).device() else {
+                eprintln!("Skipping batch assertions: no output device reported");
+                return;
+            };
+
+            let mut first = Nyaa::new_with_output(Output::new_deferred(None));
+            let mut second = Nyaa::new_with_output(Output::new_deferred(None));
+
+            switch_players_to_device([&mut first, &mut second], &device)
+                .expect("switching every player to its current device should succeed");
+            assert_eq!(first.device().as_ref(), Some(&device));
+            assert_eq!(second.device().as_ref(), Some(&device));
+            assert_eq!(first.backend(), Some(device.backend()));
+
+            let mut third = Output::new_deferred(None);
+            let mut fourth = Output::new_deferred(None);
+            switch_outputs_to_device([&mut third, &mut fourth], &device)
+                .expect("switching every output to its current device should succeed");
+        });
+    }
+
+    #[test]
+    fn switching_many_groups_to_the_global_backend_succeeds() {
+        with_isolated_global_preference(|| {
+            // Groups on deferred outputs switch no-op paths without opening
+            // real devices, keeping parallel audio tests hermetic.
+            let mut first = crate::NyaaGroup::new_with_output(Output::new_deferred(None));
+            let mut second = crate::NyaaGroup::new_with_output(Output::new_deferred(None));
+            let Some(backend) = first.backend() else {
+                eprintln!("Skipping batch assertions: no audio backend");
+                return;
+            };
+            first
+                .load_static_bytes([TEST_AUDIO_BYTES])
+                .expect("embedded audio should be loadable");
+            second
+                .load_static_bytes([TEST_AUDIO_BYTES])
+                .expect("embedded audio should be loadable");
+
+            crate::switch_groups_to_backend([&mut first, &mut second], backend)
+                .expect("switching every group to one backend should succeed");
+            assert_eq!(first.backend(), Some(backend));
+            assert_eq!(second.backend(), Some(backend));
+            assert!(first.duration().is_some());
+            assert!(second.duration().is_some());
+
+            Output::set_global_preferred_backend(Some(backend));
+            crate::switch_groups_to_global_backend([&mut first, &mut second])
+                .expect("switching every group to the global backend should succeed");
+            assert_eq!(first.backend(), Some(backend));
+            assert_eq!(second.backend(), Some(backend));
+
+            crate::set_groups_preferred_backend([&mut first, &mut second], Some(backend));
+            assert_eq!(first.preferred_backend(), Some(backend));
+            assert_eq!(second.preferred_backend(), Some(backend));
+
+            crate::set_groups_preferred_backend_to_global([&mut first, &mut second]);
+            assert_eq!(first.preferred_backend(), Some(backend));
+
+            let mut third = crate::NyaaGroup::new_with_output(Output::new_deferred(None));
+            third.set_preferred_backend_to_global();
+            assert_eq!(third.preferred_backend(), Some(backend));
+            third
+                .switch_to_global_backend()
+                .expect("switching one group to the global backend should succeed");
+            assert_eq!(third.backend(), Some(backend));
+        });
     }
 }

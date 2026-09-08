@@ -160,6 +160,18 @@ Open an output with `Output::try_new_with_backend(backend)` or
 `Nyaa::switch_backend()` and `switch_device()` stop that player's current source and
 hold its last position. Other players that shared the previous output are unaffected.
 
+For global switching without touching every instance manually:
+
+- `Output::set_global_preferred_backend()` / `global_preferred_backend()` set the
+  process-wide default that future `Output::new()`, `Nyaa::new()`, and `NyaaGroup::new()`
+  follow. Existing instances are unaffected.
+- `switch_outputs_to_backend()`, `switch_players_to_backend()`, and
+  `switch_groups_to_backend()` (plus `_to_device` and `_to_global_backend` variants)
+  switch many instances with one call. Each player/group keeps its source and position.
+- `set_players_preferred_backend()`, `set_groups_preferred_backend()`, and the
+  per-type `switch_to_global_backend()` / `set_preferred_backend_to_global()` helpers
+  cover the deferred-preference case.
+
 ## Effects
 
 Build effects from `AudioEffects::default()` and replace only required fields. `set_effects()`

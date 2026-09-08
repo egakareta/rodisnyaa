@@ -833,6 +833,26 @@ impl NyaaGroup {
         Ok(())
     }
 
+    /// Switches every member to the process-wide preferred backend.
+    ///
+    /// Uses [`Output::global_preferred_backend`] when one is set, otherwise
+    /// the system default backend. See [`NyaaGroup::switch_backend`] for
+    /// failure semantics.
+    pub fn switch_to_global_backend(&mut self) -> Result<(), AudioOutputError> {
+        let backend =
+            Output::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id());
+        self.switch_backend(backend)
+    }
+
+    /// Remembers the process-wide preferred backend for the shared output without failing.
+    ///
+    /// Equivalent to [`NyaaGroup::set_preferred_backend`] with
+    /// [`Output::global_preferred_backend`]. `None` (no global preference)
+    /// follows the system default.
+    pub fn set_preferred_backend_to_global(&mut self) {
+        self.set_preferred_backend(Output::global_preferred_backend());
+    }
+
     /// Returns the first member's source-time position, or zero when the group is empty.
     pub fn position(&self) -> Duration {
         self.members.first().map_or(Duration::ZERO, Nyaa::position)
@@ -888,6 +908,76 @@ impl NyaaGroup {
             nyaa.wait_until_end();
         }
     }
+}
+
+/// Switches every group to one newly opened shared backend.
+///
+/// This is a convenience for consumers that own several groups and do not
+/// want to switch each one manually. Each group keeps its sources and
+/// positions (see [`NyaaGroup::switch_backend`]). Stops at the first failure;
+/// earlier groups remain switched. When the backend cannot be opened, the
+/// first group fails without switching anything.
+pub fn switch_groups_to_backend<'a>(
+    groups: impl IntoIterator<Item = &'a mut NyaaGroup>,
+    backend: Backend,
+) -> Result<(), AudioOutputError> {
+    for group in groups {
+        group.switch_backend(backend)?;
+    }
+
+    Ok(())
+}
+
+/// Switches every group to one newly opened shared output device.
+///
+/// This is a convenience for consumers that own several groups and do not
+/// want to switch each one manually. Each group keeps its sources and
+/// positions (see [`NyaaGroup::switch_device`]). Stops at the first failure;
+/// earlier groups remain switched.
+pub fn switch_groups_to_device<'a>(
+    groups: impl IntoIterator<Item = &'a mut NyaaGroup>,
+    device: &Device,
+) -> Result<(), AudioOutputError> {
+    for group in groups {
+        group.switch_device(device)?;
+    }
+
+    Ok(())
+}
+
+/// Switches every group to the process-wide preferred backend.
+///
+/// Uses [`Output::global_preferred_backend`] when one is set, otherwise the
+/// system default backend. See [`switch_groups_to_backend`] for failure
+/// semantics.
+pub fn switch_groups_to_global_backend<'a>(
+    groups: impl IntoIterator<Item = &'a mut NyaaGroup>,
+) -> Result<(), AudioOutputError> {
+    let backend =
+        Output::global_preferred_backend().unwrap_or_else(|| rodio::cpal::default_host().id());
+    switch_groups_to_backend(groups, backend)
+}
+
+/// Remembers a backend preference for every group without failing.
+///
+/// Equivalent to calling [`NyaaGroup::set_preferred_backend`] on each group.
+/// `None` follows the process default (see [`Output::global_preferred_backend`]).
+pub fn set_groups_preferred_backend<'a>(
+    groups: impl IntoIterator<Item = &'a mut NyaaGroup>,
+    backend: Option<Backend>,
+) {
+    for group in groups {
+        group.set_preferred_backend(backend);
+    }
+}
+
+/// Remembers the process-wide preferred backend for every group without failing.
+///
+/// Equivalent to calling [`NyaaGroup::set_preferred_backend_to_global`] on each group.
+pub fn set_groups_preferred_backend_to_global<'a>(
+    groups: impl IntoIterator<Item = &'a mut NyaaGroup>,
+) {
+    set_groups_preferred_backend(groups, Output::global_preferred_backend());
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
