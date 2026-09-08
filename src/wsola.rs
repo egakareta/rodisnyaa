@@ -1,6 +1,6 @@
 //! WSOLA time-stretching source for inputs with fixed channel count and sample rate.
 //!
-//! Upstream from https://github.com/axel10/rodio-wsola
+//! Upstream from <https://github.com/axel10/rodio-wsola>
 
 use rodio::Source;
 use rodio::source::SeekError;
