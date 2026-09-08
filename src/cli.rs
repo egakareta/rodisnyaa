@@ -10,7 +10,18 @@ use std::process::ExitCode;
 #[command(about = "Play an audio file", version)]
 struct Cli {
     /// Audio file to play.
-    path: PathBuf,
+    #[arg(required_unless_present = "list_backends")]
+    path: Option<PathBuf>,
+
+    /// Audio backend to use (for example ALSA or PulseAudio).
+    ///
+    /// See --list-backends for the backends available on this system.
+    #[arg(long, value_name = "BACKEND")]
+    backend: Option<String>,
+
+    /// List available audio backends and exit.
+    #[arg(long)]
+    list_backends: bool,
 
     /// Playback volume, where 1 is the original volume.
     #[arg(short, long, default_value_t = 1.0, value_parser = non_negative_f32)]
@@ -63,12 +74,47 @@ fn non_negative_f64(value: &str) -> Result<f64, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run(cli: Cli) -> Result<(), rodisnyaa::NyaaError> {
-    let mut nyaa = rodisnyaa::Nyaa::try_new()?;
+fn run(cli: Cli) -> Result<(), String> {
+    if cli.list_backends {
+        let backends = rodisnyaa::Output::available_backends();
+        let default = rodisnyaa::cpal::default_host().id();
+        for backend in backends {
+            let label = rodisnyaa::Output::backend_label(backend);
+            if backend == default {
+                println!("{label} (default)");
+            } else {
+                println!("{label}");
+            }
+        }
+        return Ok(());
+    }
+
+    let path = cli
+        .path
+        .ok_or_else(|| "no audio file provided".to_owned())?;
+    let mut nyaa = match cli.backend {
+        Some(label) => {
+            let backend = rodisnyaa::Output::parse_backend_label(&label).ok_or_else(|| {
+                let available = rodisnyaa::Output::available_backends()
+                    .iter()
+                    .map(|backend| rodisnyaa::Output::backend_label(*backend))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("unknown audio backend \"{label}\". Available backends: {available}")
+            })?;
+            rodisnyaa::Nyaa::new_with_output(
+                rodisnyaa::Output::try_new_with_backend(backend)
+                    .map_err(|error| error.to_string())?,
+            )
+        }
+        None => rodisnyaa::Nyaa::try_new().map_err(|error| error.to_string())?,
+    };
     nyaa.set_volume(cli.volume);
-    nyaa.try_set_speed(cli.speed)?;
-    nyaa.try_seek_secs(cli.start)?;
-    nyaa.play_file(cli.path)?;
+    nyaa.try_set_speed(cli.speed)
+        .map_err(|error| error.to_string())?;
+    nyaa.try_seek_secs(cli.start)
+        .map_err(|error| error.to_string())?;
+    nyaa.play_file(path).map_err(|error| error.to_string())?;
     nyaa.wait_until_end();
 
     Ok(())
@@ -98,7 +144,9 @@ mod tests {
     fn accepts_a_path_with_default_playback_settings() {
         let cli = Cli::try_parse_from(["rodisnyaa", "song.mp3"]).unwrap();
 
-        assert_eq!(cli.path, PathBuf::from("song.mp3"));
+        assert_eq!(cli.path, Some(PathBuf::from("song.mp3")));
+        assert_eq!(cli.backend, None);
+        assert!(!cli.list_backends);
         assert_eq!(cli.volume, 1.0);
         assert_eq!(cli.speed, 1.0);
         assert_eq!(cli.start, 0.0);
@@ -121,6 +169,27 @@ mod tests {
         assert_eq!(cli.volume, 0.5);
         assert_eq!(cli.speed, 1.25);
         assert_eq!(cli.start, 30.0);
+    }
+
+    #[test]
+    fn accepts_a_backend_name() {
+        let cli = Cli::try_parse_from(["rodisnyaa", "song.mp3", "--backend", "ALSA"]).unwrap();
+
+        assert_eq!(cli.path, Some(PathBuf::from("song.mp3")));
+        assert_eq!(cli.backend.as_deref(), Some("ALSA"));
+    }
+
+    #[test]
+    fn lists_backends_without_a_path() {
+        let cli = Cli::try_parse_from(["rodisnyaa", "--list-backends"]).unwrap();
+
+        assert_eq!(cli.path, None);
+        assert!(cli.list_backends);
+    }
+
+    #[test]
+    fn requires_a_path_without_list_backends() {
+        assert!(Cli::try_parse_from(["rodisnyaa"]).is_err());
     }
 
     #[test]
