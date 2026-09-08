@@ -1516,6 +1516,9 @@ pub struct Nyaa {
     /// Playback lifecycle transitions waiting to be observed.
     playback_events: Mutex<VecDeque<PlaybackEvent>>,
 
+    /// Maximum number of playback lifecycle transitions retained for observation.
+    event_capacity: usize,
+
     /// The result of an audio asset being loaded in the browser.
     #[cfg(target_arch = "wasm32")]
     pending_playback: Option<PendingPlayback>,
@@ -1577,6 +1580,7 @@ impl Nyaa {
             position_is_held: true,
             playback_state: Mutex::new(PlaybackState::Idle),
             playback_events: Mutex::new(VecDeque::new()),
+            event_capacity: usize::MAX,
             #[cfg(target_arch = "wasm32")]
             pending_playback: None,
         }
@@ -2372,6 +2376,22 @@ impl Nyaa {
         self.playback_events.lock().unwrap().pop_front()
     }
 
+    /// Sets the maximum number of pending playback events retained by this player.
+    ///
+    /// A capacity of `0` disables event retention and clears any events already pending;
+    /// playback state queries such as [`Nyaa::state`] continue to work normally. For a
+    /// positive capacity, the newest events are retained and the oldest pending events are
+    /// discarded when the capacity is exceeded. Reducing the capacity discards the oldest
+    /// excess events immediately. The default capacity is `usize::MAX`.
+    pub fn set_event_capacity(&mut self, capacity: usize) {
+        self.event_capacity = capacity;
+
+        let mut events = self.playback_events.lock().unwrap();
+        while events.len() > capacity {
+            events.pop_front();
+        }
+    }
+
     fn refresh_playback_state(&self) {
         let state = *self.playback_state.lock().unwrap();
 
@@ -2392,13 +2412,19 @@ impl Nyaa {
         let previous = *current;
         *current = state;
         drop(current);
-        self.playback_events
-            .lock()
-            .unwrap()
-            .push_back(PlaybackEvent::StateChanged {
-                previous,
-                current: state,
-            });
+
+        if self.event_capacity == 0 {
+            return;
+        }
+
+        let mut events = self.playback_events.lock().unwrap();
+        if events.len() >= self.event_capacity {
+            events.pop_front();
+        }
+        events.push_back(PlaybackEvent::StateChanged {
+            previous,
+            current: state,
+        });
     }
 
     fn record_failure(&self, error: NyaaError) -> NyaaError {
@@ -3213,6 +3239,47 @@ mod tests {
                 current: PlaybackState::Idle,
             })
         );
+    }
+
+    #[test]
+    fn event_capacity_retains_the_newest_events() {
+        let mut nyaa = Nyaa::new();
+        nyaa.set_event_capacity(2);
+
+        nyaa.set_playback_state(PlaybackState::Playing);
+        nyaa.set_playback_state(PlaybackState::Paused);
+        nyaa.set_playback_state(PlaybackState::Idle);
+
+        assert_eq!(
+            nyaa.poll_event(),
+            Some(PlaybackEvent::StateChanged {
+                previous: PlaybackState::Playing,
+                current: PlaybackState::Paused,
+            })
+        );
+        assert_eq!(
+            nyaa.poll_event(),
+            Some(PlaybackEvent::StateChanged {
+                previous: PlaybackState::Paused,
+                current: PlaybackState::Idle,
+            })
+        );
+        assert_eq!(nyaa.poll_event(), None);
+    }
+
+    #[test]
+    fn zero_event_capacity_disables_retention_without_disabling_state_queries() {
+        let mut nyaa = Nyaa::new();
+
+        nyaa.set_playback_state(PlaybackState::Loading);
+        nyaa.set_event_capacity(0);
+
+        assert_eq!(nyaa.state(), PlaybackState::Loading);
+        assert_eq!(nyaa.poll_event(), None);
+
+        nyaa.set_playback_state(PlaybackState::Failed);
+        assert_eq!(nyaa.state(), PlaybackState::Failed);
+        assert_eq!(nyaa.poll_event(), None);
     }
 
     #[test]
