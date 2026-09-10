@@ -69,6 +69,7 @@ run = [
     "--quiet",
     "--manifest-path",
     "{{config_root}}/Cargo.toml",
+    "--all-features",
     "--",
 ]
 
