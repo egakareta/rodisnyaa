@@ -510,11 +510,7 @@ impl Output {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        Output,
-        player::{SoundPlayer, switch_players_to_device},
-        switch_outputs_to_device,
-    };
+    use crate::{Output, switch_outputs_to_device};
 
     #[test]
     fn switching_many_players_to_the_current_device_is_a_noop() {
@@ -522,15 +518,6 @@ mod tests {
             eprintln!("Skipping batch assertions: no output device reported");
             return;
         };
-
-        let mut first = SoundPlayer::new_with_output(Output::new_deferred(None));
-        let mut second = SoundPlayer::new_with_output(Output::new_deferred(None));
-
-        switch_players_to_device([&mut first, &mut second], &device)
-            .expect("switching every player to its current device should succeed");
-        assert_eq!(first.device().as_ref(), Some(&device));
-        assert_eq!(second.device().as_ref(), Some(&device));
-        assert_eq!(first.backend(), Some(device.backend()));
 
         let mut third = Output::new_deferred(None);
         let mut fourth = Output::new_deferred(None);

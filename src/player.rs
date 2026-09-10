@@ -30,7 +30,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::Response;
 
 use crate::{
-    Backend, Device, NyaaError, Output, OutputError, PlaybackRangeSource, SoundAsset, SoundEffects,
+    NyaaError, Output, OutputError, PlaybackRangeSource, SoundAsset, SoundEffects,
     format_timestamp, wsola::Wsola,
 };
 
@@ -63,23 +63,6 @@ pub enum PlaybackEvent {
     },
 }
 
-/// Convenience function to switch every player to one newly opened output device.
-///
-/// Each player keeps its source and position.
-///
-/// Stops at the first failure, earlier players remain switched.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn switch_players_to_device<'a>(
-    players: impl IntoIterator<Item = &'a mut SoundPlayer>,
-    device: &Device,
-) -> Result<(), OutputError> {
-    for player in players {
-        player.switch_device(device)?;
-    }
-
-    Ok(())
-}
-
 /// rodisnyaa: Painless audio playback for native and web platforms.
 ///
 /// If you are only playing one audio track at a time, you can use [`SoundPlayer`] directly.
@@ -87,10 +70,7 @@ pub(crate) fn switch_players_to_device<'a>(
 /// pass clones to [`SoundPlayer::new_with_output`].
 pub(crate) struct SoundPlayer {
     /// The audio output shared by this player.
-    output: Output,
-
-    /// The backend this player prefers when opening its output.
-    preferred_backend: Option<Backend>,
+    pub(crate) output: Output,
 
     /// An optional scene mixer that receives this player's source before the device output.
     target_mixer: Option<rodio::mixer::Mixer>,
@@ -153,37 +133,22 @@ impl Default for SoundPlayer {
     }
 }
 
-#[allow(dead_code)]
 impl SoundPlayer {
     /// Creates a player with its own default audio output.
     pub fn new() -> Self {
-        let mut sound_player = Self::new_with_output(Output::new());
-        sound_player.preferred_backend = None;
+        let sound_player = Self::new_with_output(Output::new());
         sound_player
     }
 
-    /// Creates a player and returns an error if its default audio output cannot be opened.
-    ///
-    /// Browser targets defer opening the output until playback or
-    /// [`SoundPlayer::retry_output`] so initialization can occur in response to a user gesture.
-    pub fn try_new() -> Result<Self, OutputError> {
-        let backend = rodio::cpal::default_host().id();
-        let output = Output::try_new_with_backend(backend)?;
-        let mut sound_player = Self::new_with_output(output);
-        sound_player.preferred_backend = None;
-        Ok(sound_player)
-    }
     /// Creates a player connected to a reusable audio output.
     ///
     /// The preferred backend is initialized to the output's backend, so
     /// [`SoundPlayer::ensure_output`] keeps using it.
     pub fn new_with_output(output: Output) -> Self {
         let player = output.connect_player();
-        let preferred_backend = output.backend();
 
         Self {
             output,
-            preferred_backend,
             target_mixer: None,
             player,
             duration: Mutex::new(None),
@@ -222,22 +187,6 @@ impl SoundPlayer {
             .or_else(|| self.output.connect_player())
     }
 
-    /// Returns the audio backend selected for this player.
-    ///
-    /// Returns `None` when the player uses an [`Output`] created with
-    /// [`Output::from_sink`].
-    pub fn backend(&self) -> Option<Backend> {
-        self.output.backend()
-    }
-
-    /// Returns the output device selected for this player, if one was chosen or resolved.
-    ///
-    /// Returns `None` when the player uses an [`Output`] created with
-    /// [`Output::from_sink`] or when the platform did not report a device description.
-    pub fn device(&self) -> Option<Device> {
-        self.output.device()
-    }
-
     /// Returns whether this player currently has an initialized audio output.
     ///
     /// A browser player can return `false` until playback initializes WebAudio in response to a
@@ -265,129 +214,6 @@ impl SoundPlayer {
         Ok(())
     }
 
-    /// Returns the backend this player prefers when opening its output.
-    ///
-    /// `None` means the system default. This is the sticky choice set with
-    /// [`SoundPlayer::set_preferred_backend`]; it is retained even when opening fails so a
-    /// later [`SoundPlayer::ensure_output`] can retry without extra caller state.
-    pub fn preferred_backend(&self) -> Option<Backend> {
-        self.preferred_backend
-    }
-
-    /// Returns the UI label for this player's backend preference.
-    pub fn preferred_backend_name(&self) -> String {
-        Output::backend_label(self.preferred_backend.unwrap_or_else(|| {
-            self.output
-                .backend()
-                .unwrap_or_else(|| rodio::cpal::default_host().id())
-        }))
-    }
-
-    /// Returns a UI-friendly name for this player's output.
-    ///
-    /// Returns the active backend and device once the output is initialized or
-    /// [`SoundPlayer::preferred_backend_name`] when the output is not yet open.
-    pub fn backend_display_name(&self) -> String {
-        if self.has_output() {
-            self.output.display_name()
-        } else {
-            self.preferred_backend_name()
-        }
-    }
-
-    /// Remembers a backend preference, replacing the current output. `None` follows
-    /// the system default.
-    ///
-    /// The new output is opened immediately when possible. Active playback keeps its
-    /// source and position and resumes on the new output, idle players keep their
-    /// loaded source and position.
-    ///
-    /// Does nothing when the preference is unchanged and an output backend is already
-    /// selected.
-    pub fn set_preferred_backend(&mut self, backend: Option<Backend>) {
-        if self.preferred_backend == backend && self.backend().is_some() {
-            return;
-        }
-
-        let output = Output::new_with_preferred_backend(backend);
-        self.replace_output_preserving_playback(output, backend);
-    }
-
-    /// Remembers a backend preference using [`Output::parse_backend_label`].
-    ///
-    /// Returns `false` without changing anything when the label is unknown.
-    pub fn set_preferred_backend_by_name(&mut self, name: &str) -> bool {
-        let Some(backend) = Output::parse_backend_label(name) else {
-            return false;
-        };
-
-        self.set_preferred_backend(Some(backend));
-        true
-    }
-
-    /// Ensures this player's output is initialized for its preferred backend.
-    ///
-    /// Aligns a custom [`Output::from_sink`] output to an explicitly preferred
-    /// backend, then retries opening the output when its sink is missing and reconnects
-    /// the player. Returns `Ok` once [`SoundPlayer::has_output`] is true.
-    ///
-    /// Call this before playback when the backend may have been chosen while no device
-    /// was open (for example after [`SoundPlayer::set_preferred_backend`] deferred the
-    /// open, or after the device was unplugged). Playback methods already retry
-    /// automatically, so this is primarily for warming the output up front or for
-    /// surfacing [`OutputError`] outside of playback.
-    pub fn ensure_output(&mut self) -> Result<(), OutputError> {
-        if self.backend().is_none()
-            && let Some(backend) = self.preferred_backend
-        {
-            let output = Output::new_with_preferred_backend(Some(backend));
-            self.replace_output_preserving_playback(output, Some(backend));
-        }
-
-        self.retry_output()
-    }
-
-    /// Switches this player to a specific audio backend.
-    ///
-    /// A successful switch keeps the current source and position, resuming on the new
-    /// output when playback was active, and remembers the backend as the new
-    /// preference (see [`SoundPlayer::preferred_backend`]). A failed switch leaves the
-    /// current output and preference untouched. Other players that shared the previous
-    /// [`Output`] are not affected. To remember a backend even when opening fails, use
-    /// [`SoundPlayer::set_preferred_backend`] instead.
-    pub fn switch_backend(&mut self, backend: Backend) -> Result<(), OutputError> {
-        if self.backend() == Some(backend) {
-            self.preferred_backend = Some(backend);
-            return Ok(());
-        }
-
-        let output = Output::try_new_with_backend(backend)?;
-
-        self.replace_output_preserving_playback(output, Some(backend));
-
-        Ok(())
-    }
-
-    /// Switches this player to a specific output device such as a speaker, headphone, or
-    /// virtual device.
-    ///
-    /// A successful switch keeps the current source and position, resuming on the new
-    /// device when playback was active, and remembers the device's backend as the new
-    /// preference. Other players that shared the previous [`Output`] are not affected.
-    /// Switching devices also switches the player's backend to the device's backend.
-    pub fn switch_device(&mut self, device: &Device) -> Result<(), OutputError> {
-        if self.device().as_ref() == Some(device) {
-            self.preferred_backend = Some(device.backend);
-            return Ok(());
-        }
-
-        let output = Output::try_new_with_device(device)?;
-
-        self.replace_output_preserving_playback(output, Some(device.backend));
-
-        Ok(())
-    }
-
     fn has_current_source(&self) -> bool {
         if self.current_shared_bytes.is_some() || self.current_static_bytes.is_some() {
             return true;
@@ -404,18 +230,13 @@ impl SoundPlayer {
         false
     }
 
-    pub(crate) fn replace_output_preserving_playback(
-        &mut self,
-        output: Output,
-        preferred_backend: Option<Backend>,
-    ) {
+    pub(crate) fn replace_output_preserving_playback(&mut self, output: Output) {
         let position = self.position();
         let was_playing = self.is_playing();
         let was_paused = self.is_paused();
         let has_source = self.has_current_source();
 
         self.output = output;
-        self.preferred_backend = preferred_backend;
 
         // A switch originates from a user gesture, so give a deferred output (for
         // example a browser output waiting on autoplay policy) one chance to open
@@ -476,15 +297,9 @@ impl SoundPlayer {
         &mut self,
         output: Output,
         mixer: rodio::mixer::Mixer,
-        preferred_backend: Option<Backend>,
     ) {
         self.target_mixer = Some(mixer);
-        self.replace_output_preserving_playback(output, preferred_backend);
-    }
-
-    /// When [`MixerDeviceSink`] is dropped a message is logged to stderr or emitted through tracing if the tracing feature is enabled.
-    pub fn log_on_drop(&mut self, log: bool) {
-        self.output.log_on_drop(log);
+        self.replace_output_preserving_playback(output);
     }
 
     /// Creates a [`Decoder`] from bytes stored in an [`Arc`], which allows multiple players to share the same audio data without copying it onto the heap.
@@ -552,18 +367,6 @@ impl SoundPlayer {
         f32: FromSample<S::Item>,
     {
         self.queue_source_at(source, requested_position, true)
-    }
-
-    fn prepare_source_at<S>(
-        &mut self,
-        source: S,
-        requested_position: Option<Duration>,
-    ) -> Result<(), NyaaError>
-    where
-        S: Source + Send + 'static,
-        f32: FromSample<S::Item>,
-    {
-        self.queue_source_at(source, requested_position, false)
     }
 
     fn queue_source_at<S>(
@@ -679,57 +482,6 @@ impl SoundPlayer {
         Err(self.record_failure(NyaaError::NoAudioSource))
     }
 
-    pub(crate) fn prepare_current_source_at(
-        &mut self,
-        position: Duration,
-    ) -> Result<(), NyaaError> {
-        if let Some(bytes) = self.current_shared_bytes.clone() {
-            let source = Self::decoder_from_shared_bytes(bytes.clone())
-                .map_err(|error| self.record_failure(error))?;
-            self.prepare_source_at(source, Some(position))?;
-            self.current_shared_bytes = Some(bytes);
-            return Ok(());
-        }
-
-        if let Some(bytes) = self.current_static_bytes {
-            let source = Self::decoder_from_static_bytes(bytes)
-                .map_err(|error| self.record_failure(error))?;
-            self.prepare_source_at(source, Some(position))?;
-            self.current_static_bytes = Some(bytes);
-            return Ok(());
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(path) = self.current_file_path.clone() {
-            let source =
-                Self::decoder_from_file(&path).map_err(|error| self.record_failure(error))?;
-            self.prepare_source_at(source, Some(position))?;
-            self.current_file_path = Some(path);
-            return Ok(());
-        }
-
-        Err(self.record_failure(NyaaError::NoAudioSource))
-    }
-
-    pub(crate) fn start_prepared(&self) {
-        if let Some(player) = self.player.as_ref() {
-            player.play();
-            self.set_playback_state(PlaybackState::Playing);
-        }
-    }
-
-    pub(crate) fn cancel_prepared(&mut self) {
-        let position = self.position();
-
-        if let Some(player) = self.player.as_ref() {
-            player.stop();
-        }
-
-        self.position_offset = position;
-        self.player_position_anchor = Duration::ZERO;
-        self.position_is_held = true;
-    }
-
     fn playback_bounds(
         &self,
         duration: Option<Duration>,
@@ -804,27 +556,6 @@ impl SoundPlayer {
         Ok(())
     }
 
-    /// Loads bytes into this player without starting playback.
-    ///
-    /// The bytes are copied into shared storage so the source can be decoded again for seeking or
-    /// later playback.
-    pub fn load_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
-        self.load_shared_arc_bytes(Arc::from(bytes.as_ref()))
-    }
-
-    /// Plays bytes stored in an [`Arc`], which allows multiple players to share the same
-    /// audio data without copying it onto the heap.
-    pub fn play_shared_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), NyaaError> {
-        let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
-
-        let source = Self::decoder_from_shared_bytes(bytes.clone())
-            .map_err(|error| self.record_failure(error))?;
-        self.play_source(source)?;
-        self.current_shared_bytes = Some(bytes);
-
-        Ok(())
-    }
-
     /// Loads static bytes and their duration without starting playback.
     pub fn load_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
         let duration = Self::decoder_from_static_bytes(bytes)
@@ -839,6 +570,7 @@ impl SoundPlayer {
 
     /// Plays bytes with a `'static` lifetime, such as data from `include_bytes!`, without
     /// copying the encoded audio onto the heap.
+    #[allow(dead_code)]
     pub fn play_static_bytes(&mut self, bytes: &'static [u8]) -> Result<(), NyaaError> {
         let source =
             Self::decoder_from_static_bytes(bytes).map_err(|error| self.record_failure(error))?;
@@ -872,46 +604,6 @@ impl SoundPlayer {
         self.current_file_path = Some(path);
 
         Ok(())
-    }
-
-    /// Loads an audio asset using its native path or browser URL without starting playback.
-    pub async fn load_asset(&mut self, asset: &SoundAsset) -> Result<(), NyaaError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.load_file(asset.native_path())
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let bytes = asset
-                .load_browser_bytes()
-                .await
-                .map_err(|error| self.record_failure(error))?;
-            self.load_shared_arc_bytes(bytes)
-        }
-    }
-
-    /// Plays an audio asset using its native path or browser URL.
-    pub async fn play_asset(&mut self, asset: &SoundAsset) -> Result<(), NyaaError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.play_file(asset.native_path())
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let bytes = asset
-                .load_browser_bytes()
-                .await
-                .map_err(|error| self.record_failure(error))?;
-            let source = Self::decoder_from_shared_bytes(bytes.clone())
-                .map_err(|error| self.record_failure(error))?;
-
-            self.play_source(source)?;
-            self.current_shared_bytes = Some(bytes);
-
-            Ok(())
-        }
     }
 
     /// Starts playing an audio asset while keeping browser loading state in this instance.
@@ -1006,22 +698,6 @@ impl SoundPlayer {
     pub fn poll_event(&self) -> Option<PlaybackEvent> {
         self.refresh_playback_state();
         self.playback_events.lock().unwrap().pop_front()
-    }
-
-    /// Sets the maximum number of pending playback events retained by this player.
-    ///
-    /// A capacity of `0` disables event retention and clears any events already pending;
-    /// playback state queries such as [`SoundPlayer::state`] continue to work normally. For a
-    /// positive capacity, the newest events are retained and the oldest pending events are
-    /// discarded when the capacity is exceeded. Reducing the capacity discards the oldest
-    /// excess events immediately. The default capacity is `usize::MAX`.
-    pub fn set_event_capacity(&mut self, capacity: usize) {
-        self.event_capacity = capacity;
-
-        let mut events = self.playback_events.lock().unwrap();
-        while events.len() > capacity {
-            events.pop_front();
-        }
     }
 
     fn refresh_playback_state(&self) {
@@ -1281,47 +957,6 @@ impl SoundPlayer {
         result
     }
 
-    /// Returns the duration of an audio asset using its native path or browser URL.
-    pub async fn duration_from_asset(asset: &SoundAsset) -> Result<Option<Duration>, NyaaError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let file = File::open(asset.native_path()).map_err(NyaaError::File)?;
-            Ok(Decoder::try_from(file)
-                .map_err(NyaaError::Decode)?
-                .total_duration())
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let bytes = asset.load_browser_bytes().await?;
-            Ok(Self::decoder_from_shared_bytes(bytes)?.total_duration())
-        }
-    }
-
-    /// Returns the duration of shared bytes, such as data from a `Vec<u8>`, without copying the
-    /// encoded audio onto the heap.
-    pub fn duration_from_shared_bytes(
-        bytes: impl AsRef<[u8]>,
-    ) -> Result<Option<Duration>, NyaaError> {
-        let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
-        Ok(Self::decoder_from_shared_bytes(bytes)?.total_duration())
-    }
-
-    /// Returns the duration of static bytes, such as data from `include_bytes!`, without copying
-    /// the encoded audio onto the heap.
-    pub fn duration_from_static_bytes(bytes: &'static [u8]) -> Result<Option<Duration>, NyaaError> {
-        Ok(Self::decoder_from_static_bytes(bytes)?.total_duration())
-    }
-
-    /// Returns the duration of an audio file using its native path.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn duration_from_file(path: impl AsRef<Path>) -> Result<Option<Duration>, NyaaError> {
-        let file = File::open(path).map_err(NyaaError::File)?;
-        Ok(Decoder::try_from(file)
-            .map_err(NyaaError::Decode)?
-            .total_duration())
-    }
-
     /// Returns the position of the sound that's being played.
     ///
     /// This takes into account any speedup or delay applied.
@@ -1431,11 +1066,6 @@ impl SoundPlayer {
         }
     }
 
-    /// Attempts to resume playback of a paused player or a stopped player that retains its source.
-    pub fn try_resume(&mut self) -> Result<(), NyaaError> {
-        self.try_play_at(self.position())
-    }
-
     /// Stops the sink by emptying the queue.
     pub fn stop(&mut self) {
         let position = self.position();
@@ -1454,15 +1084,6 @@ impl SoundPlayer {
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         self.set_playback_state(PlaybackState::Idle);
-    }
-
-    /// Returns whether this player retains an audio source.
-    ///
-    /// Returns `true` while a source is loaded, playing, paused, stopped with
-    /// [`SoundPlayer::stop_preserving_source`], or ended. Returns `false` when no source
-    /// has been loaded or played, or after [`SoundPlayer::stop`] clears the source.
-    pub fn has_source(&self) -> bool {
-        self.has_current_source()
     }
 
     /// Stops playback but retains the source, metadata, and position.
@@ -1535,17 +1156,6 @@ impl SoundPlayer {
     /// multiply each sample by this value.
     pub fn volume(&self) -> f32 {
         *self.volume.lock().unwrap()
-    }
-
-    /// Changes the playback speed of the sound.
-    ///
-    /// A value of `1.0` uses the original speed. For example, `0.5` plays at half speed and
-    /// `2.0` plays at double speed. Pitch changes by the same factor unless
-    /// [`SoundPlayer::set_preserve_pitch`] is enabled.
-    pub fn set_speed(&mut self, speed: f32) {
-        if let Err(error) = self.try_set_speed(speed) {
-            self.record_failure(error);
-        }
     }
 
     /// Changes playback speed and reports errors from rebuilding a pitch-preserving source.
@@ -1650,25 +1260,6 @@ impl SoundPlayer {
         }
 
         Ok(())
-    }
-
-    /// Plays a source-time range from the current loaded or previously played source.
-    ///
-    /// Playback stops at the range end unless looping is enabled with [`SoundPlayer::set_looping`].
-    pub fn play_range(&mut self, range: Range<Duration>) -> Result<(), NyaaError> {
-        if range.start >= range.end {
-            return Err(self.record_failure(NyaaError::InvalidPlaybackRange));
-        }
-
-        let position = range.start;
-        let previous_range = self.loop_range.replace(range);
-        let result = self.play_current_source_at(position);
-
-        if result.is_err() {
-            self.loop_range = previous_range;
-        }
-
-        result
     }
 
     /// Returns the configured playback and looping range.
@@ -1779,20 +1370,6 @@ mod tests {
     }
 
     #[test]
-    fn loading_static_bytes_exposes_duration_without_playing() {
-        let mut sound_player = SoundPlayer::new();
-        let expected_duration = SoundPlayer::duration_from_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio duration should be readable");
-
-        sound_player
-            .load_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be loadable");
-
-        assert_eq!(sound_player.duration(), expected_duration);
-        assert!(!sound_player.is_playing());
-    }
-
-    #[test]
     fn playback_state_and_events_follow_transport_controls() {
         let mut sound_player = SoundPlayer::new();
 
@@ -1833,47 +1410,6 @@ mod tests {
     }
 
     #[test]
-    fn event_capacity_retains_the_newest_events() {
-        let mut sound_player = SoundPlayer::new();
-        sound_player.set_event_capacity(2);
-
-        sound_player.set_playback_state(PlaybackState::Playing);
-        sound_player.set_playback_state(PlaybackState::Paused);
-        sound_player.set_playback_state(PlaybackState::Idle);
-
-        assert_eq!(
-            sound_player.poll_event(),
-            Some(PlaybackEvent::StateChanged {
-                previous: PlaybackState::Playing,
-                current: PlaybackState::Paused,
-            })
-        );
-        assert_eq!(
-            sound_player.poll_event(),
-            Some(PlaybackEvent::StateChanged {
-                previous: PlaybackState::Paused,
-                current: PlaybackState::Idle,
-            })
-        );
-        assert_eq!(sound_player.poll_event(), None);
-    }
-
-    #[test]
-    fn zero_event_capacity_disables_retention_without_disabling_state_queries() {
-        let mut sound_player = SoundPlayer::new();
-
-        sound_player.set_playback_state(PlaybackState::Loading);
-        sound_player.set_event_capacity(0);
-
-        assert_eq!(sound_player.state(), PlaybackState::Loading);
-        assert_eq!(sound_player.poll_event(), None);
-
-        sound_player.set_playback_state(PlaybackState::Failed);
-        assert_eq!(sound_player.state(), PlaybackState::Failed);
-        assert_eq!(sound_player.poll_event(), None);
-    }
-
-    #[test]
     fn configured_range_bounds_playback_and_can_loop() {
         let mut sound_player = SoundPlayer::new();
         let range = Duration::from_secs(42)..Duration::from_millis(42_050);
@@ -1889,21 +1425,6 @@ mod tests {
 
         assert_eq!(sound_player.state(), PlaybackState::Playing);
         assert!(range.contains(&sound_player.position()));
-    }
-
-    #[test]
-    fn play_range_stops_at_its_end() {
-        let mut sound_player = SoundPlayer::new();
-
-        sound_player
-            .load_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be loadable");
-        sound_player
-            .play_range(Duration::from_secs(42)..Duration::from_millis(42_050))
-            .expect("a range from the loaded source should be playable");
-        thread::sleep(Duration::from_millis(125));
-
-        assert_eq!(sound_player.state(), PlaybackState::Ended);
     }
 
     #[test]
@@ -1953,18 +1474,6 @@ mod tests {
     }
 
     #[test]
-    fn playback_preserves_speed_selected_before_a_track() {
-        let mut sound_player = SoundPlayer::new();
-
-        sound_player.set_speed(1.5);
-        sound_player
-            .play_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be playable");
-
-        assert_eq!(sound_player.speed(), 1.5);
-    }
-
-    #[test]
     fn playback_preserves_volume_selected_before_a_track() {
         let mut sound_player = SoundPlayer::new();
 
@@ -1976,61 +1485,6 @@ mod tests {
             .expect("embedded audio should be playable");
 
         assert_eq!(sound_player.volume(), 0.35);
-    }
-
-    #[test]
-    fn position_tracks_source_time_when_speed_changes() {
-        let mut sound_player = SoundPlayer::new();
-
-        sound_player
-            .play_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be playable");
-        thread::sleep(Duration::from_millis(200));
-
-        let before_speed_change = sound_player.position();
-        sound_player.set_speed(2.0);
-        let after_speed_change = sound_player.position();
-
-        assert!(
-            after_speed_change.saturating_sub(before_speed_change) < Duration::from_millis(100),
-            "changing speed jumped the position from {before_speed_change:?} to {after_speed_change:?}"
-        );
-
-        thread::sleep(Duration::from_millis(250));
-        let advancement = sound_player.position().saturating_sub(after_speed_change);
-
-        assert!(
-            advancement >= Duration::from_millis(350),
-            "position advanced only {advancement:?} during 250ms of playback at 2x speed"
-        );
-    }
-
-    #[test]
-    fn position_tracks_source_time_when_speed_changes_while_looping() {
-        let mut sound_player = SoundPlayer::new();
-
-        sound_player.set_looping(true);
-        sound_player
-            .play_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be playable");
-        thread::sleep(Duration::from_millis(200));
-
-        let before_speed_change = sound_player.position();
-        sound_player.set_speed(2.0);
-        let after_speed_change = sound_player.position();
-
-        assert!(
-            after_speed_change.saturating_sub(before_speed_change) < Duration::from_millis(100),
-            "changing speed jumped the position from {before_speed_change:?} to {after_speed_change:?}"
-        );
-
-        thread::sleep(Duration::from_millis(250));
-        let advancement = sound_player.position().saturating_sub(after_speed_change);
-
-        assert!(
-            advancement >= Duration::from_millis(350),
-            "position advanced only {advancement:?} during 250ms of looped playback at 2x speed"
-        );
     }
 
     #[test]
@@ -2103,181 +1557,5 @@ mod tests {
 
         let devices = Output::refresh_available_devices();
         assert_eq!(Output::available_devices(), devices);
-    }
-
-    #[test]
-    fn switching_to_a_listed_device_selects_it() {
-        let devices = Output::available_devices();
-
-        for device in &devices {
-            let Ok(output) = Output::try_new_with_device(device) else {
-                continue;
-            };
-
-            assert_eq!(output.backend(), Some(device.backend()));
-            assert_eq!(output.device().as_ref(), Some(device));
-
-            let mut sound_player = SoundPlayer::new_with_output(output);
-            assert_eq!(sound_player.device().as_ref(), Some(device));
-            assert_eq!(sound_player.backend(), Some(device.backend()));
-
-            sound_player
-                .switch_device(device)
-                .expect("switching to the current device should be a no-op");
-
-            sound_player
-                .load_static_bytes(TEST_AUDIO_BYTES)
-                .expect("device output should accept players");
-            return;
-        }
-    }
-
-    #[test]
-    fn switching_output_preserves_transport_state_and_position() {
-        let mut sound_player = SoundPlayer::new();
-        sound_player
-            .play_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be playable");
-        thread::sleep(Duration::from_millis(100));
-        assert!(sound_player.is_playing());
-
-        let current = sound_player.device();
-        let Some(other) = Output::available_devices()
-            .into_iter()
-            .find(|device| Some(device) != current.as_ref())
-        else {
-            eprintln!("Skipping transport assertions: no alternate output device");
-            return;
-        };
-
-        let position_before = sound_player.position();
-        sound_player
-            .switch_device(&other)
-            .expect("an enumerated device should open");
-        assert_eq!(sound_player.device().as_ref(), Some(&other));
-
-        thread::sleep(Duration::from_millis(100));
-        assert!(
-            sound_player.is_playing(),
-            "switching outputs stopped playback at {:?}",
-            sound_player.position()
-        );
-        assert!(
-            sound_player.position() >= position_before,
-            "switching outputs moved backward from {position_before:?} to {:?}",
-            sound_player.position()
-        );
-        assert!(sound_player.duration().is_some());
-
-        sound_player.pause();
-        let paused_position = sound_player.position();
-        let current = sound_player.device();
-        let Some(third) = Output::available_devices()
-            .into_iter()
-            .find(|device| Some(device) != current.as_ref())
-        else {
-            return;
-        };
-
-        sound_player
-            .switch_device(&third)
-            .expect("an enumerated device should open");
-        assert!(
-            sound_player.is_paused(),
-            "switching outputs resumed paused playback"
-        );
-        assert!(
-            sound_player.position().saturating_sub(paused_position) < Duration::from_millis(500)
-                && paused_position.saturating_sub(sound_player.position())
-                    < Duration::from_millis(500),
-            "switching outputs moved paused playback from {paused_position:?} to {:?}",
-            sound_player.position()
-        );
-    }
-
-    #[test]
-    fn setting_preferred_backend_by_name_rejects_unknown_labels() {
-        let mut sound_player = SoundPlayer::new();
-
-        if let Some(backend) = Output::available_backends().into_iter().next() {
-            let label = Output::backend_label(backend);
-            assert!(sound_player.set_preferred_backend_by_name(&label.to_lowercase()));
-            assert_eq!(sound_player.preferred_backend(), Some(backend));
-        }
-
-        let before = sound_player.preferred_backend();
-        assert!(!sound_player.set_preferred_backend_by_name("not-a-backend"));
-        assert_eq!(sound_player.preferred_backend(), before);
-    }
-
-    #[test]
-    fn reselecting_the_current_preference_does_not_interrupt_playback() {
-        let mut sound_player = SoundPlayer::new();
-        sound_player
-            .play_static_bytes(TEST_AUDIO_BYTES)
-            .expect("embedded audio should be playable");
-        assert!(sound_player.is_playing());
-
-        let preferred = sound_player.preferred_backend();
-        sound_player.set_preferred_backend(preferred);
-        assert_eq!(sound_player.preferred_backend(), preferred);
-        assert!(
-            sound_player.is_playing(),
-            "re-selecting the current preference stopped playback"
-        );
-    }
-
-    #[test]
-    fn switching_backend_remembers_the_new_preference() {
-        let mut sound_player = SoundPlayer::new();
-        let Some(backend) = sound_player.backend() else {
-            eprintln!("Skipping preference assertions: no audio backend");
-            return;
-        };
-
-        sound_player
-            .switch_backend(backend)
-            .expect("switching to the current backend should be a no-op");
-        assert_eq!(sound_player.preferred_backend(), Some(backend));
-        assert_eq!(sound_player.backend(), Some(backend));
-    }
-
-    #[test]
-    fn deferred_output_opens_lazily_through_ensure() {
-        let backends = Output::available_backends();
-        let Some(backend) = backends.first().copied() else {
-            eprintln!("Skipping deferred assertions: no audio backend");
-            return;
-        };
-
-        let output = Output::new_deferred(Some(backend));
-        assert_eq!(output.backend(), Some(backend));
-        assert!(!output.has_output());
-
-        let mut sound_player = SoundPlayer::new_with_output(output);
-        assert_eq!(sound_player.preferred_backend(), Some(backend));
-        assert!(!sound_player.has_output());
-        assert_eq!(
-            sound_player.backend_display_name(),
-            Output::backend_label(backend)
-        );
-
-        if sound_player.ensure_output().is_err() {
-            eprintln!("Skipping deferred open assertions: backend {backend:?} has no device");
-            return;
-        }
-
-        assert!(sound_player.has_output());
-        assert_eq!(sound_player.backend(), Some(backend));
-        assert!(
-            sound_player
-                .backend_display_name()
-                .contains(&Output::backend_label(backend))
-        );
-
-        sound_player
-            .play_static_bytes(TEST_AUDIO_BYTES)
-            .expect("deferred output should play after ensure");
-        assert!(sound_player.is_playing());
     }
 }

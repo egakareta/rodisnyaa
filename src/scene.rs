@@ -370,7 +370,6 @@ impl NyaaState {
         }
 
         let output = self.output.clone();
-        let preferred_backend = self.preferred_backend;
         let sound_ids = self
             .sounds
             .ids()
@@ -391,7 +390,7 @@ impl NyaaState {
             self.sound_mut(id)
                 .expect("enumerated sounds must remain valid")
                 .player
-                .replace_routing_preserving_playback(output.clone(), mixer, preferred_backend);
+                .replace_routing_preserving_playback(output.clone(), mixer);
             self.collect_sound_events(id);
         }
     }
@@ -1137,12 +1136,11 @@ impl Sound {
 
         let mixer = state.group(group.id)?.mixer.clone();
         let output = state.output.clone();
-        let preferred_backend = state.preferred_backend;
         state.sound_mut(self.id)?.group = group.id;
         state
             .sound_mut(self.id)?
             .player
-            .replace_routing_preserving_playback(output, mixer, preferred_backend);
+            .replace_routing_preserving_playback(output, mixer);
         state.reconcile_sound_pause(self.id);
         Ok(())
     }
