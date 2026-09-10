@@ -1,0 +1,141 @@
+use thiserror::Error;
+
+use crate::{Backend, Device};
+
+/// The error type for rodisnyaa operations.
+#[derive(Debug, Error)]
+pub enum NyaaError {
+    /// The error type for I/O operations of the Read, Write, Seek, and associated traits.
+    #[error("failed to open audio file: {0}")]
+    File(#[source] std::io::Error),
+
+    /// Errors that can occur when creating a decoder.
+    #[error("failed to decode audio file: {0}")]
+    Decode(#[source] rodio::decoder::DecoderError),
+
+    /// Occurs when `try_seek` fails because the underlying decoder has an error or does not support seeking.
+    #[error("failed to seek audio: {0}")]
+    Seek(#[source] rodio::source::SeekError),
+
+    /// An audio effect setting is outside its supported range.
+    #[error("invalid audio effect setting: {0}")]
+    InvalidEffect(&'static str),
+
+    /// The audio output could not be initialized.
+    #[error(transparent)]
+    Output(#[from] OutputError),
+
+    /// The playback range is empty or starts beyond the end of the source.
+    #[error("the playback range must contain audio")]
+    InvalidPlaybackRange,
+
+    /// The seek position is NaN, infinite, or negative.
+    #[error("the seek position must be a finite non-negative number")]
+    InvalidSeekPosition,
+
+    /// A sound or group name is empty, contains `/`, or has surrounding whitespace.
+    #[error("sound and group names must be non-empty path components")]
+    InvalidName,
+
+    /// A sound or group with this name already exists under the same parent.
+    #[error("a sound or group named {0:?} already exists under this parent")]
+    DuplicateName(String),
+
+    /// A sound handle no longer refers to a live sound.
+    #[error("the sound handle is no longer valid")]
+    InvalidSoundHandle,
+
+    /// A pending load completed after the sound was assigned a different source.
+    #[error("the sound source changed while it was loading")]
+    SoundSourceChanged,
+
+    /// A sound-group handle no longer refers to a live group.
+    #[error("the sound-group handle is no longer valid")]
+    InvalidSoundGroupHandle,
+
+    /// Two handles from different audio roots were used together.
+    #[error("sounds and groups must belong to the same SoundPlayer")]
+    DifferentNyaa,
+
+    /// Reparenting a group would make it one of its own ancestors.
+    #[error("a sound group cannot be parented beneath itself")]
+    SoundGroupCycle,
+
+    /// The implicit root sound group cannot be moved or removed.
+    #[error("the root sound group cannot be moved or removed")]
+    RootSoundGroup,
+
+    /// A volume was negative, NaN, or infinite.
+    #[error("volume must be a finite non-negative number")]
+    InvalidVolume,
+
+    /// A playback speed was non-positive, NaN, or infinite.
+    #[error("playback speed must be a finite positive number")]
+    InvalidSpeed,
+
+    /// A playback operation required a previously loaded or played source.
+    #[error("no audio source is available")]
+    NoAudioSource,
+
+    /// Errors that might occur when loading an audio asset in a browser.
+    #[cfg(target_arch = "wasm32")]
+    #[error("failed to load browser audio asset: {0}")]
+    BrowserAsset(String),
+}
+
+/// An error that can occur while opening an audio backend or device.
+#[derive(Debug, Error)]
+pub enum OutputError {
+    /// The requested backend is not available on this system.
+    #[error("audio backend {backend} is unavailable: {source}")]
+    BackendUnavailable {
+        /// The backend that was requested.
+        backend: Backend,
+        /// The error returned by CPAL while initializing the backend.
+        #[source]
+        source: rodio::cpal::HostUnavailable,
+    },
+
+    /// The requested backend has no output device.
+    #[error("audio backend {0} has no output device")]
+    NoOutputDevice(Backend),
+
+    /// The output devices of the requested backend could not be listed.
+    #[error("failed to list output devices of audio backend {backend}: {source}")]
+    ListDevices {
+        /// The backend whose devices could not be listed.
+        backend: Backend,
+        /// The error returned by CPAL while listing devices.
+        #[source]
+        source: rodio::cpal::DevicesError,
+    },
+
+    /// The requested output device could not be found.
+    ///
+    /// The device may have been unplugged or disabled after enumeration.
+    #[error("audio output device \"{device}\" was not found")]
+    DeviceNotFound {
+        /// The device that could not be found.
+        device: Box<Device>,
+    },
+
+    /// The requested backend's output stream could not be opened.
+    #[error("failed to open audio backend {backend}: {source}")]
+    OpenStream {
+        /// The backend that was requested.
+        backend: Backend,
+        /// The error returned by rodio while opening the output stream.
+        #[source]
+        source: rodio::stream::DeviceSinkError,
+    },
+
+    /// The requested output device's stream could not be opened.
+    #[error("failed to open audio output device \"{device}\": {source}")]
+    OpenDeviceStream {
+        /// The device that was requested.
+        device: Box<Device>,
+        /// The error returned by rodio while opening the output stream.
+        #[source]
+        source: rodio::stream::DeviceSinkError,
+    },
+}

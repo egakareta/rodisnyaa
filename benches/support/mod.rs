@@ -1,10 +1,10 @@
 #[cfg(not(target_arch = "wasm32"))]
-use criterion::Criterion;
-use rodisnyaa::{Nyaa, Output, format_timestamp};
-use std::hint::black_box;
-use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+use std::{hint::black_box, time::Duration};
+
+#[cfg(not(target_arch = "wasm32"))]
+use criterion::Criterion;
+use rodisnyaa::{Nyaa, Output, Sound, SoundSource, format_timestamp};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::{Criterion, Instant};
 
@@ -27,13 +27,17 @@ impl ByteStorage {
         }
     }
 
-    fn play(self, nyaa: &mut Nyaa) {
+    fn source(self) -> SoundSource {
         match self {
-            Self::Static => nyaa.play_static_bytes(AUDIO_BYTES),
-            Self::Shared => nyaa.play_shared_bytes(AUDIO_BYTES),
+            Self::Static => SoundSource::static_bytes(AUDIO_BYTES),
+            Self::Shared => SoundSource::shared_bytes(AUDIO_BYTES),
         }
-        .expect("the benchmark MP3 should be playable");
     }
+}
+
+struct PreparedPlayer {
+    _nyaa: Nyaa,
+    sound: Sound,
 }
 
 #[derive(Clone, Copy)]
@@ -50,8 +54,11 @@ pub fn benchmark_criterion() -> Criterion {
 }
 
 fn audio_duration() -> Duration {
-    Nyaa::duration_from_static_bytes(AUDIO_BYTES)
+    let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
+    nyaa.create_sound("duration", SoundSource::static_bytes(AUDIO_BYTES))
         .expect("the benchmark MP3 duration should be readable")
+        .duration()
+        .expect("the benchmark sound should remain valid")
         .expect("the benchmark MP3 should report its duration")
 }
 
@@ -91,26 +98,35 @@ fn benchmark_name(operation: &str, storage: ByteStorage, position: BenchmarkPosi
     )
 }
 
-fn prepare_player(output: &Output, storage: ByteStorage, position: Duration, paused: bool) -> Nyaa {
-    let mut nyaa = Nyaa::new_with_output(output.clone());
-    storage.play(&mut nyaa);
-    nyaa.try_seek(position)
+fn prepare_player(
+    output: &Output,
+    storage: ByteStorage,
+    position: Duration,
+    paused: bool,
+) -> PreparedPlayer {
+    let nyaa = Nyaa::new_with_output(output.clone());
+    let sound = nyaa
+        .create_sound("benchmark", storage.source())
+        .expect("the benchmark sound should be created");
+    sound.play().expect("the benchmark MP3 should be playable");
+    sound
+        .try_seek(position)
         .expect("the benchmark player should seek to its setup position");
 
     if paused {
-        nyaa.pause();
+        sound.pause().expect("the benchmark player should pause");
         assert!(
-            nyaa.is_paused(),
+            sound.is_paused().unwrap(),
             "benchmarks require an available audio output"
         );
     } else {
         assert!(
-            nyaa.is_playing(),
+            sound.is_playing().unwrap(),
             "benchmarks require an available audio output"
         );
     }
 
-    nyaa
+    PreparedPlayer { _nyaa: nyaa, sound }
 }
 
 pub fn bench_play(criterion: &mut Criterion) {
@@ -122,24 +138,30 @@ pub fn bench_play(criterion: &mut Criterion) {
             let name = benchmark_name("play", storage, position);
 
             criterion.bench_function(&name, move |bencher| {
-                let mut nyaa = Nyaa::new_with_output(output.clone());
+                let nyaa = Nyaa::new_with_output(output.clone());
+                let sound = nyaa
+                    .create_sound("benchmark", storage.source())
+                    .expect("the benchmark sound should be created");
 
                 bencher.iter_custom(|iterations| {
                     let mut elapsed = Duration::ZERO;
 
                     for _ in 0..iterations {
-                        nyaa.try_seek(position.value)
+                        sound
+                            .try_seek(position.value)
                             .expect("the benchmark player should accept a deferred seek");
                         let start = Instant::now();
-                        storage.play(&mut nyaa);
+                        sound
+                            .replay()
+                            .expect("the benchmark MP3 should be playable");
                         elapsed += start.elapsed();
 
                         assert!(
-                            nyaa.is_playing(),
+                            sound.is_playing().unwrap(),
                             "benchmarks require an available audio output"
                         );
-                        black_box(nyaa.position());
-                        nyaa.stop();
+                        black_box(sound.position().unwrap());
+                        sound.stop().unwrap();
                     }
 
                     elapsed
@@ -158,21 +180,23 @@ pub fn bench_stop(criterion: &mut Criterion) {
             let name = benchmark_name("stop", storage, position);
 
             criterion.bench_function(&name, move |bencher| {
-                let mut nyaa = prepare_player(&output, storage, position.value, false);
+                let prepared = prepare_player(&output, storage, position.value, false);
 
                 bencher.iter_custom(|iterations| {
                     let mut elapsed = Duration::ZERO;
 
                     for _ in 0..iterations {
                         let start = Instant::now();
-                        nyaa.stop();
+                        prepared.sound.stop().unwrap();
                         elapsed += start.elapsed();
-                        black_box(nyaa.position());
+                        black_box(prepared.sound.position().unwrap());
 
-                        storage.play(&mut nyaa);
-                        nyaa.try_seek(position.value)
+                        prepared.sound.replay().unwrap();
+                        prepared
+                            .sound
+                            .try_seek(position.value)
                             .expect("the benchmark player should reset its position");
-                        assert!(nyaa.is_playing());
+                        assert!(prepared.sound.is_playing().unwrap());
                     }
 
                     elapsed
@@ -197,7 +221,7 @@ pub fn bench_seek(criterion: &mut Criterion) {
                 } else {
                     position.value.saturating_sub(Duration::from_secs(1))
                 };
-                let mut nyaa = prepare_player(&output, storage, neighboring_position, true);
+                let prepared = prepare_player(&output, storage, neighboring_position, true);
                 let mut seek_to_position = true;
 
                 bencher.iter(|| {
@@ -208,9 +232,11 @@ pub fn bench_seek(criterion: &mut Criterion) {
                     };
                     seek_to_position = !seek_to_position;
 
-                    nyaa.try_seek(black_box(target))
+                    prepared
+                        .sound
+                        .try_seek(black_box(target))
                         .expect("the benchmark seek should succeed");
-                    black_box(nyaa.position())
+                    black_box(prepared.sound.position().unwrap())
                 });
             });
         }
@@ -226,13 +252,16 @@ pub fn bench_speed(criterion: &mut Criterion) {
             let name = benchmark_name("speed", storage, position);
 
             criterion.bench_function(&name, move |bencher| {
-                let mut nyaa = prepare_player(&output, storage, position.value, true);
+                let prepared = prepare_player(&output, storage, position.value, true);
                 let mut fast = false;
 
                 bencher.iter(|| {
                     fast = !fast;
-                    nyaa.set_speed(black_box(if fast { 1.5 } else { 0.75 }));
-                    black_box(nyaa.speed())
+                    prepared
+                        .sound
+                        .set_speed(black_box(if fast { 1.5 } else { 0.75 }))
+                        .unwrap();
+                    black_box(prepared.sound.speed().unwrap())
                 });
             });
         }
@@ -248,13 +277,16 @@ pub fn bench_volume(criterion: &mut Criterion) {
             let name = benchmark_name("volume", storage, position);
 
             criterion.bench_function(&name, move |bencher| {
-                let nyaa = prepare_player(&output, storage, position.value, true);
+                let prepared = prepare_player(&output, storage, position.value, true);
                 let mut quiet = false;
 
                 bencher.iter(|| {
                     quiet = !quiet;
-                    nyaa.set_volume(black_box(if quiet { 0.25 } else { 1.0 }));
-                    black_box(nyaa.volume())
+                    prepared
+                        .sound
+                        .set_volume(black_box(if quiet { 0.25 } else { 1.0 }))
+                        .unwrap();
+                    black_box(prepared.sound.volume().unwrap())
                 });
             });
         }

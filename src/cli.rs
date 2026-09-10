@@ -1,9 +1,10 @@
 #[cfg(not(target_arch = "wasm32"))]
-use clap::Parser;
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
+
+#[cfg(not(target_arch = "wasm32"))]
+use clap::Parser;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Parser)]
@@ -92,7 +93,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let path = cli
         .path
         .ok_or_else(|| "no audio file provided".to_owned())?;
-    let mut nyaa = match cli.backend {
+    let nyaa = match cli.backend {
         Some(label) => {
             let backend = rodisnyaa::Output::parse_backend_label(&label).ok_or_else(|| {
                 let available = rodisnyaa::Output::available_backends()
@@ -109,13 +110,20 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         None => rodisnyaa::Nyaa::try_new().map_err(|error| error.to_string())?,
     };
-    nyaa.set_volume(cli.volume);
-    nyaa.try_set_speed(cli.speed)
+    let sound = nyaa
+        .create_sound("cli", rodisnyaa::SoundSource::file(path))
         .map_err(|error| error.to_string())?;
-    nyaa.try_seek_secs(cli.start)
+    sound
+        .set_volume(cli.volume)
         .map_err(|error| error.to_string())?;
-    nyaa.play_file(path).map_err(|error| error.to_string())?;
-    nyaa.wait_until_end();
+    sound
+        .set_speed(cli.speed)
+        .map_err(|error| error.to_string())?;
+    sound
+        .try_seek_secs(cli.start)
+        .map_err(|error| error.to_string())?;
+    sound.play().map_err(|error| error.to_string())?;
+    sound.wait_until_end().map_err(|error| error.to_string())?;
 
     Ok(())
 }

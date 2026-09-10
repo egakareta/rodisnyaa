@@ -1,11 +1,11 @@
-use rodisnyaa::{AudioAsset, Nyaa};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
+use rodisnyaa::{Nyaa, Sound, SoundAsset, SoundSource};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 #[cfg(target_arch = "wasm32")]
@@ -99,21 +99,26 @@ enum PlaybackSource {
 }
 
 impl PlaybackSource {
-    async fn play(&self, nyaa: &mut Nyaa) {
+    fn source(&self) -> SoundSource {
         match self {
-            Self::StaticBytes => nyaa
-                .play_static_bytes(TEST_AUDIO_BYTES)
-                .expect("static audio should be playable"),
-            Self::Resource(resource) => nyaa
-                .play_asset(&resource.asset)
-                .await
-                .expect("audio resource should be playable"),
+            Self::StaticBytes => SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            Self::Resource(resource) => SoundSource::asset(resource.asset.clone()),
         }
+    }
+
+    async fn play(&self, sound: &Sound) {
+        if matches!(self, Self::Resource(_)) {
+            sound
+                .load()
+                .await
+                .expect("audio resource should be loadable");
+        }
+        sound.play().expect("audio source should be playable");
     }
 }
 
 struct TestResource {
-    asset: AudioAsset,
+    asset: SoundAsset,
     #[cfg(target_arch = "wasm32")]
     object_url: String,
 }
@@ -122,7 +127,7 @@ impl TestResource {
     #[cfg(not(target_arch = "wasm32"))]
     fn new() -> Self {
         Self {
-            asset: AudioAsset::new(TEST_AUDIO_PATH, "unused-in-native-tests"),
+            asset: SoundAsset::new(TEST_AUDIO_PATH, "unused-in-native-tests"),
         }
     }
 
@@ -137,7 +142,7 @@ impl TestResource {
             .expect("audio object URL should be created");
 
         Self {
-            asset: AudioAsset::new("unused-in-browser-tests", &object_url),
+            asset: SoundAsset::new("unused-in-browser-tests", &object_url),
             object_url,
         }
     }
@@ -186,22 +191,25 @@ async fn wait_for_audio_settle() {
 }
 
 async fn measure_playback(source: PlaybackSource) -> MemoryReport {
-    let mut nyaa = Nyaa::new();
+    let nyaa = Nyaa::new();
+    let sound = nyaa
+        .create_sound("memory", source.source())
+        .expect("the memory-test sound should be created");
     let idle = memory_snapshot();
 
-    source.play(&mut nyaa).await;
+    source.play(&sound).await;
     wait_for_audio_settle().await;
     let playing = memory_snapshot();
 
-    nyaa.stop();
+    sound.stop().expect("playback should stop");
     wait_for_audio_settle().await;
     let stopped = memory_snapshot();
 
-    source.play(&mut nyaa).await;
+    sound.play().expect("audio should replay");
     wait_for_audio_settle().await;
     let replayed = memory_snapshot();
 
-    nyaa.stop();
+    sound.stop().expect("replayed audio should stop");
 
     MemoryReport {
         idle,

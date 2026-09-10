@@ -1,7 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
-use rodisnyaa::{AudioAsset, Nyaa, NyaaGroup, PlaybackState};
 use std::time::Duration;
+
+use rodisnyaa::{Nyaa, PlaybackState, SoundAsset, SoundSource};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
@@ -31,65 +32,89 @@ async fn wait_for_browser_task() {
 
 #[wasm_bindgen_test]
 async fn duration_from_asset_fetches_and_decodes_browser_url() {
-    let asset = AudioAsset::new("missing/native/audio.wav", WAV_DATA_URL);
+    let asset = SoundAsset::new("missing/native/audio.wav", WAV_DATA_URL);
 
-    let duration = Nyaa::duration_from_asset(&asset)
+    let nyaa = Nyaa::new();
+    let sound = nyaa
+        .create_sound("browser", SoundSource::asset(asset))
+        .expect("the browser sound should be created");
+    sound
+        .load()
         .await
-        .expect("browser audio asset should be fetched and decoded")
+        .expect("browser audio asset should be fetched and decoded");
+    let duration = sound
+        .duration()
+        .expect("the browser sound should remain valid")
         .expect("WAV duration should be available");
 
     assert!(duration > Duration::ZERO);
 
-    let mut nyaa = Nyaa::new();
-    nyaa.start_asset_playback(&asset)
+    sound
+        .play()
         .expect("cached browser audio asset should be playable");
 
-    assert!(!nyaa.is_loading());
+    assert!(!sound.is_loading().unwrap());
 }
 
 #[wasm_bindgen_test]
 async fn nyaa_owns_pending_asset_playback_and_duration() {
-    let asset = AudioAsset::new("missing/native/audio.wav", WAV_DATA_URL);
-    let mut nyaa = Nyaa::new();
+    let asset = SoundAsset::new("missing/native/audio.wav", WAV_DATA_URL);
+    let nyaa = Nyaa::new();
+    let sound = nyaa
+        .create_sound("pending", SoundSource::asset(asset))
+        .expect("the pending browser sound should be created");
 
-    nyaa.start_asset_playback(&asset)
+    sound
+        .play()
         .expect("browser audio playback should start loading");
-    assert!(nyaa.is_loading());
+    assert!(sound.is_loading().unwrap());
 
     loop {
-        if let Some(result) = nyaa.poll_pending_playback() {
-            result.expect("browser audio asset should be playable");
+        let failures = nyaa.update();
+        assert!(
+            failures.is_empty(),
+            "browser audio asset should be playable"
+        );
+        if !sound.is_loading().unwrap() {
             break;
         }
 
         wait_for_browser_task().await;
     }
 
-    assert!(!nyaa.is_loading());
+    assert!(!sound.is_loading().unwrap());
     assert!(
-        nyaa.duration()
+        sound
+            .duration()
+            .unwrap()
             .is_some_and(|duration| duration > Duration::ZERO)
     );
 }
 
 #[wasm_bindgen_test]
 async fn group_loads_browser_assets_with_shared_configuration() {
-    let first = AudioAsset::new("missing/native/first.wav", WAV_DATA_URL);
-    let second = AudioAsset::new("missing/native/second.wav", WAV_DATA_URL);
-    let mut group = NyaaGroup::new();
-    group.set_volume(0.4);
+    let first = SoundAsset::new("missing/native/first.wav", WAV_DATA_URL);
+    let second = SoundAsset::new("missing/native/second.wav", WAV_DATA_URL);
+    let nyaa = Nyaa::new();
+    let group = nyaa.create_group("browser").unwrap();
+    group.set_volume(0.4).unwrap();
+    let first = group
+        .create_sound("first", SoundSource::asset(first))
+        .unwrap();
+    let second = group
+        .create_sound("second", SoundSource::asset(second))
+        .unwrap();
 
-    group
-        .load_assets([&first, &second])
-        .await
-        .expect("both browser audio assets should load");
+    first.load().await.expect("the first asset should load");
+    second.load().await.expect("the second asset should load");
 
-    assert_eq!(group.len(), 2);
-    assert!(group.duration().is_some_and(|duration| !duration.is_zero()));
+    assert_eq!(group.sounds().unwrap().len(), 2);
     assert!(
-        group
-            .members()
-            .iter()
-            .all(|player| player.volume() == 0.4 && player.state() == PlaybackState::Idle)
+        first
+            .duration()
+            .unwrap()
+            .is_some_and(|duration| !duration.is_zero())
     );
+    assert_eq!(first.playback_state().unwrap(), PlaybackState::Idle);
+    assert_eq!(second.playback_state().unwrap(), PlaybackState::Idle);
 }

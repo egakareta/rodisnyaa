@@ -2,9 +2,9 @@ use web_time::Duration;
 
 use eframe::egui;
 use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, AudioAsset, Device, AudioEffects,
-    AutomaticGainEffect, Backend, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, Output,
-    ReverbEffect, Waveform, WaveformBuilder,
+    format_timestamp_secs, parse_timestamp, SoundAsset, SoundEffects, AutomaticGainEffect, Backend,
+    Device, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, Output, ReverbEffect, Sound,
+    SoundSource, Waveform, WaveformBuilder,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -146,25 +146,24 @@ struct App {
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
     selected_song: usize,
-    audio_assets: Vec<AudioAsset>,
-    effects: AudioEffects,
+    audio_assets: Vec<SoundAsset>,
+    effects: SoundEffects,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let mut nyaa = Nyaa::new();
+        let nyaa = Nyaa::new();
         let song = SONGS[DEFAULT_SONG_INDEX];
 
-        if let Err(error) = nyaa.load_static_bytes(song.bytes) {
-            log::error!("could not load audio duration: {error}");
-        }
+        nyaa.create_sound("preview", SoundSource::static_bytes(song.bytes))
+            .unwrap_or_else(|error| panic!("could not create preview sound: {error}"));
 
         let waveform = Waveform::builder_from_static_bytes(song.bytes)
             .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
             .ok();
         let audio_assets = SONGS
             .iter()
-            .map(|song| AudioAsset::new(song.native_path, song.wasm_url))
+            .map(|song| SoundAsset::new(song.native_path, song.wasm_url))
             .collect();
 
         Self {
@@ -174,18 +173,24 @@ impl App {
             audio_mode: AudioMode::StaticBytes,
             selected_song: DEFAULT_SONG_INDEX,
             audio_assets,
-            effects: AudioEffects::default(),
+            effects: SoundEffects::default(),
         }
+    }
+
+    fn sound(&self) -> Sound {
+        self.nyaa
+            .sound("preview")
+            .expect("the preview sound is created with the app")
     }
 
     fn play(&mut self) {
         let song = SONGS[self.selected_song];
-        let result = match self.audio_mode {
-            AudioMode::StaticBytes => self.nyaa.play_static_bytes(song.bytes),
-            AudioMode::File => self
-                .nyaa
-                .start_asset_playback(&self.audio_assets[self.selected_song]),
+        let sound = self.sound();
+        let source = match self.audio_mode {
+            AudioMode::StaticBytes => SoundSource::static_bytes(song.bytes),
+            AudioMode::File => SoundSource::asset(self.audio_assets[self.selected_song].clone()),
         };
+        let result = sound.set_source(source).and_then(|()| sound.play());
 
         if let Err(error) = result {
             log::error!("could not play audio: {error}");
@@ -195,11 +200,16 @@ impl App {
     fn select_song(&mut self, selected_song: usize) {
         let song = SONGS[selected_song];
 
-        self.nyaa.stop();
+        if let Err(error) = self.sound().stop() {
+            log::error!("could not stop audio: {error}");
+        }
         self.selected_song = selected_song;
         self.waveform_window = WaveformWindow::default();
 
-        if let Err(error) = self.nyaa.load_static_bytes(song.bytes) {
+        if let Err(error) = self
+            .sound()
+            .set_source(SoundSource::static_bytes(song.bytes))
+        {
             log::error!("could not load audio duration: {error}");
         }
 
@@ -221,10 +231,13 @@ impl App {
     }
 
     fn stop(&mut self) {
-        self.nyaa.stop();
+        if let Err(error) = self.sound().stop() {
+            log::error!("could not stop audio: {error}");
+        }
     }
 
     fn show_effects(&mut self, ui: &mut egui::Ui) {
+        let sound = self.sound();
         egui::CollapsingHeader::new("Post processing")
             .default_open(false)
             .show(ui, |ui| {
@@ -449,21 +462,21 @@ impl App {
                     });
 
                 ui.horizontal(|ui| {
-                    let has_changes = self.effects != self.nyaa.effects();
+                    let has_changes = self.effects != sound.effects().unwrap_or_default();
 
                     if ui
                         .add_enabled(has_changes, egui::Button::new("Apply"))
                         .clicked()
                     {
-                        if let Err(error) = self.nyaa.set_effects(self.effects) {
+                        if let Err(error) = sound.set_effects(self.effects) {
                             log::error!("could not apply audio effects: {error}");
                         }
                     }
 
                     if ui.button("Reset").clicked() {
-                        let effects = AudioEffects::default();
+                        let effects = SoundEffects::default();
 
-                        if let Err(error) = self.nyaa.set_effects(effects) {
+                        if let Err(error) = sound.set_effects(effects) {
                             log::error!("could not reset audio effects: {error}");
                         } else {
                             self.effects = effects;
@@ -474,6 +487,7 @@ impl App {
     }
 
     fn show_waveform(&mut self, ui: &mut egui::Ui) {
+        let sound = self.sound();
         let Some(waveform) = self.waveform.as_mut() else {
             ui.label("Waveform unavailable");
             return;
@@ -484,7 +498,7 @@ impl App {
             .as_secs_f64();
         let minimum_visible_secs = duration_secs.min(0.25);
 
-        let playhead_secs = self.nyaa.position().as_secs_f64();
+        let playhead_secs = sound.position().unwrap_or_default().as_secs_f64();
         let desired_size = egui::vec2(ui.available_width().min(760.0), 156.0);
 
         ui.horizontal(|ui| {
@@ -551,19 +565,23 @@ impl App {
                 let seek_secs =
                     visible_range.start + visible_duration * f64::from(pointer_fraction);
 
-                if let Err(error) = self.nyaa.try_seek_secs(seek_secs) {
+                if let Err(error) = sound.try_seek_secs(seek_secs) {
                     log::error!("could not seek audio: {error}");
                 }
             }
         }
 
         if response.drag_started() {
-            self.waveform_window.resume_after_scrub = self.nyaa.is_playing();
-            self.nyaa.pause();
+            self.waveform_window.resume_after_scrub = sound.is_playing().unwrap_or(false);
+            if let Err(error) = sound.pause() {
+                log::error!("could not pause audio: {error}");
+            }
         }
 
         if response.drag_stopped() && self.waveform_window.resume_after_scrub {
-            self.nyaa.resume();
+            if let Err(error) = sound.resume() {
+                log::error!("could not resume audio: {error}");
+            }
             self.waveform_window.resume_after_scrub = false;
         }
 
@@ -656,11 +674,16 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if let Some(Err(error)) = self.nyaa.poll_pending_playback() {
-            log::error!("could not play audio: {error}");
+        let sound = self.sound();
+        for failure in self.nyaa.update() {
+            log::error!(
+                "could not update sound {:?}: {}",
+                failure.sound,
+                failure.error
+            );
         }
 
-        if self.nyaa.is_loading() || self.nyaa.is_playing() {
+        if sound.is_loading().unwrap_or(false) || sound.is_playing().unwrap_or(false) {
             ui.ctx().request_repaint();
         }
 
@@ -691,7 +714,7 @@ impl eframe::App for App {
                     let mut selected_backend = self.nyaa.backend();
                     let mut selected_device = self.nyaa.device();
 
-                    ui.add_enabled_ui(!self.nyaa.is_loading(), |ui| {
+                    ui.add_enabled_ui(!sound.is_loading().unwrap_or(false), |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Song:");
                             egui::ComboBox::from_id_salt("song_selector")
@@ -836,27 +859,35 @@ impl eframe::App for App {
 
                             ui.spacing_mut().slider_width = control_width;
 
-                            let mut position_secs: f64 = self.nyaa.clamped_position().as_secs_f64();
+                            let mut position_secs: f64 =
+                                sound.clamped_position().unwrap_or_default().as_secs_f64();
                             let response = ui.add(
-                                egui::Slider::new(&mut position_secs, self.nyaa.seek_range())
-                                    .show_value(false),
+                                egui::Slider::new(
+                                    &mut position_secs,
+                                    sound.seek_range().unwrap_or(0.0..=1.0),
+                                )
+                                .show_value(false),
                             );
 
                             if response.drag_started() {
-                                self.nyaa.pause();
+                                if let Err(error) = sound.pause() {
+                                    log::error!("could not pause audio: {error}");
+                                }
                             }
 
                             if response.changed() {
-                                if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
+                                if let Err(error) = sound.try_seek_secs(position_secs) {
                                     log::error!("could not seek audio: {error}");
                                 }
                             }
 
                             if response.drag_stopped() {
-                                self.nyaa.resume();
+                                if let Err(error) = sound.resume() {
+                                    log::error!("could not resume audio: {error}");
+                                }
                             }
 
-                            let is_loading = self.nyaa.is_loading();
+                            let is_loading = sound.is_loading().unwrap_or(false);
                             let button_size = ui.spacing().interact_size;
 
                             let (row_rect, _) = ui.allocate_exact_size(
@@ -881,13 +912,13 @@ impl eframe::App for App {
 
                             let response = left_ui.add(
                                 egui::DragValue::new(&mut position_secs)
-                                    .range(self.nyaa.seek_range())
+                                    .range(sound.seek_range().unwrap_or(0.0..=1.0))
                                     .custom_formatter(|position, _| format_timestamp_secs(position))
                                     .custom_parser(|input| parse_timestamp(input).map(f64::from)),
                             );
 
                             if response.changed() {
-                                if let Err(error) = self.nyaa.try_seek_secs(position_secs) {
+                                if let Err(error) = sound.try_seek_secs(position_secs) {
                                     log::error!("could not seek audio: {error}");
                                 }
                             }
@@ -910,7 +941,7 @@ impl eframe::App for App {
                                     .add(egui::Button::new(""))
                                     .on_hover_text(if is_loading {
                                         "Loading"
-                                    } else if self.nyaa.is_playing() {
+                                    } else if sound.is_playing().unwrap_or(false) {
                                         "Stop"
                                     } else {
                                         "Play"
@@ -927,7 +958,7 @@ impl eframe::App for App {
                                     egui::TextStyle::Button.resolve(button_ui.style()),
                                     icon_color,
                                 );
-                            } else if self.nyaa.is_playing() {
+                            } else if sound.is_playing().unwrap_or(false) {
                                 let size = 8.0;
                                 button_ui.painter().rect_filled(
                                     egui::Rect::from_center_size(center, egui::vec2(size, size)),
@@ -950,7 +981,7 @@ impl eframe::App for App {
                             }
 
                             if button.clicked() {
-                                if self.nyaa.is_playing() {
+                                if sound.is_playing().unwrap_or(false) {
                                     self.stop();
                                 } else {
                                     self.play();
@@ -960,7 +991,7 @@ impl eframe::App for App {
                             ui.painter().text(
                                 egui::pos2(row_rect.right(), row_rect.center().y),
                                 egui::Align2::RIGHT_CENTER,
-                                self.nyaa.duration_formatted(),
+                                sound.duration_formatted().unwrap_or_else(|_| "0:00".into()),
                                 egui::TextStyle::Body.resolve(ui.style()),
                                 ui.visuals().text_color(),
                             );
@@ -968,7 +999,7 @@ impl eframe::App for App {
                             ui.add_space(30.0);
 
                             ui.columns(2, |columns| {
-                                let mut speed = self.nyaa.speed();
+                                let mut speed = sound.speed().unwrap_or(1.0);
                                 let speed_width = columns[0].available_width();
                                 columns[0].label(format!("Speed: {speed:.2}x"));
                                 columns[0].spacing_mut().slider_width = speed_width;
@@ -980,12 +1011,12 @@ impl eframe::App for App {
                                 );
 
                                 if response.changed() {
-                                    if let Err(error) = self.nyaa.try_set_speed(speed) {
+                                    if let Err(error) = sound.set_speed(speed) {
                                         log::error!("could not change playback speed: {error}");
                                     }
                                 }
 
-                                let mut volume = self.nyaa.volume() * 100.0;
+                                let mut volume = sound.volume().unwrap_or(1.0) * 100.0;
                                 let volume_width = columns[1].available_width();
                                 columns[1].label(format!("Volume: {volume:.0}%"));
                                 columns[1].spacing_mut().slider_width = volume_width;
@@ -995,32 +1026,35 @@ impl eframe::App for App {
                                 );
 
                                 if response.changed() {
-                                    self.nyaa.set_volume(volume / 100.0);
+                                    if let Err(error) = sound.set_volume(volume / 100.0) {
+                                        log::error!("could not change volume: {error}");
+                                    }
                                 }
                             });
 
                             ui.add_space(8.0);
 
                             ui.horizontal(|ui| {
-                                let mut preserve_pitch = self.nyaa.preserves_pitch();
+                                let mut preserve_pitch = sound.preserves_pitch().unwrap_or(false);
                                 if ui
                                     .checkbox(&mut preserve_pitch, "Preserve pitch")
                                     .on_hover_text("Use WSOLA for tempo changes")
                                     .changed()
                                 {
-                                    if let Err(error) = self.nyaa.set_preserve_pitch(preserve_pitch)
-                                    {
+                                    if let Err(error) = sound.set_preserve_pitch(preserve_pitch) {
                                         log::error!("could not change pitch preservation: {error}");
                                     }
                                 }
 
-                                let mut looping = self.nyaa.is_looping();
+                                let mut looping = sound.is_looping().unwrap_or(false);
                                 if ui
                                     .checkbox(&mut looping, "Loop")
                                     .on_hover_text("Repeat playback")
                                     .changed()
                                 {
-                                    self.nyaa.set_looping(looping);
+                                    if let Err(error) = sound.set_looping(looping) {
+                                        log::error!("could not change looping: {error}");
+                                    }
                                 }
                             });
                         },

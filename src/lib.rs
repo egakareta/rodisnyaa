@@ -4,16 +4,28 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
-mod group;
-mod nyaa;
+mod effect;
+mod error;
 pub mod patch;
+mod player;
+mod range;
+mod scene;
+mod sink;
+mod sound_source;
+mod timestamp;
 mod waveform;
 pub mod wsola;
 
-pub use group::*;
-pub use nyaa::*;
+pub use effect::*;
+pub use error::*;
+pub use player::{PlaybackEvent, PlaybackState};
+pub(crate) use range::*;
+pub use rodio::{self, cpal};
+pub use scene::*;
+pub use sink::*;
+pub use sound_source::*;
+pub use timestamp::*;
 pub use waveform::*;
 
-// re-export our beloved
-pub use rodio;
-pub use rodio::cpal;
+/// A CPAL audio host that can provide an output device.
+pub type Backend = rodio::cpal::HostId;
