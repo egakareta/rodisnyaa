@@ -128,9 +128,11 @@ impl SoundAsset {
     }
 }
 
-/// An encoded audio source retained by a [`crate::Sound`].
+/// An audio source assignment retained by a [`crate::Sound`].
 #[derive(Clone, Debug)]
 pub enum SoundSource {
+    /// No audio resource has been assigned yet.
+    Empty,
     /// Encoded bytes with a static lifetime, such as bytes produced by `include_bytes!`.
     StaticBytes(&'static [u8]),
     /// Encoded bytes in shared heap storage.
@@ -145,6 +147,7 @@ pub enum SoundSource {
 impl SoundSource {
     pub(crate) fn same_resource(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Empty, Self::Empty) => true,
             (Self::StaticBytes(left), Self::StaticBytes(right)) => std::ptr::eq(*left, *right),
             (Self::SharedBytes(left), Self::SharedBytes(right)) => Arc::ptr_eq(left, right),
             #[cfg(not(target_arch = "wasm32"))]
@@ -154,6 +157,11 @@ impl SoundSource {
             }
             _ => false,
         }
+    }
+
+    /// Creates an empty source that can be replaced later with [`crate::Sound::set_source`].
+    pub fn empty() -> Self {
+        Self::Empty
     }
 
     /// Creates a source from encoded bytes with a static lifetime.
@@ -180,6 +188,12 @@ impl SoundSource {
     /// Creates a source from a cross-platform audio asset.
     pub fn asset(asset: SoundAsset) -> Self {
         Self::Asset(asset)
+    }
+}
+
+impl Default for SoundSource {
+    fn default() -> Self {
+        Self::Empty
     }
 }
 

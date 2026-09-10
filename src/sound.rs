@@ -108,7 +108,6 @@ type PendingPlayback = Rc<RefCell<Option<Result<Arc<[u8]>, NyaaError>>>>;
 
 #[derive(Clone, Copy)]
 enum SourceMetadata {
-    #[cfg(target_arch = "wasm32")]
     Unloaded,
     Loaded(Option<Duration>),
 }
@@ -189,7 +188,6 @@ impl SoundNode {
         let metadata = Self::source_metadata(&self.source.clone())
             .map_err(|error| self.record_failure(error))?;
         match metadata {
-            #[cfg(target_arch = "wasm32")]
             SourceMetadata::Unloaded => {
                 self.reset_loaded_source(None);
                 Ok(false)
@@ -210,12 +208,6 @@ impl SoundNode {
         self.cancel_pending_playback();
         self.source = source;
         self.source_revision = self.source_revision.wrapping_add(1);
-        #[cfg(not(target_arch = "wasm32"))]
-        let SourceMetadata::Loaded(duration) = metadata;
-        #[cfg(not(target_arch = "wasm32"))]
-        let source_loaded = true;
-
-        #[cfg(target_arch = "wasm32")]
         let (source_loaded, duration) = match metadata {
             SourceMetadata::Unloaded => (false, None),
             SourceMetadata::Loaded(duration) => (true, duration),
@@ -230,6 +222,7 @@ impl SoundNode {
 
     fn source_metadata(source: &SoundSource) -> Result<SourceMetadata, NyaaError> {
         let duration = match source {
+            SoundSource::Empty => return Ok(SourceMetadata::Unloaded),
             SoundSource::StaticBytes(bytes) => decoder::from_static_bytes(bytes)?.total_duration(),
             SoundSource::SharedBytes(bytes) => {
                 decoder::from_shared_bytes(bytes.clone())?.total_duration()
@@ -351,6 +344,7 @@ impl SoundNode {
 
     fn play_current_source_at(&mut self, position: Duration) -> Result<(), NyaaError> {
         match self.source.clone() {
+            SoundSource::Empty => Err(self.record_failure(NyaaError::NoAudioSource)),
             SoundSource::StaticBytes(bytes) => {
                 let source = decoder::from_static_bytes(bytes)
                     .map_err(|error| self.record_failure(error))?;
@@ -666,6 +660,7 @@ impl SoundNode {
         };
 
         match self.source.clone() {
+            SoundSource::Empty => Err(NyaaError::NoAudioSource),
             SoundSource::StaticBytes(bytes) => {
                 self.seek_with_decode_source(decoder::from_static_bytes(bytes)?, position)
             }

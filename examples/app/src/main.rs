@@ -1,6 +1,9 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        LazyLock,
+    },
 };
 
 use eframe::egui;
@@ -98,7 +101,12 @@ const SONGS: [Song; 3] = [
         wasm_url: "THE UNFORGIVING.mp3",
     },
 ];
-
+static SOUND_ASSET_PER_SONG: LazyLock<Vec<SoundAsset>> = LazyLock::new(|| {
+    SONGS
+        .iter()
+        .map(|song| SoundAsset::new(song.native_path, song.wasm_url))
+        .collect()
+});
 const DEFAULT_SONG_INDEX: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -152,33 +160,23 @@ struct App {
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
     selected_song: usize,
-    audio_assets: Vec<SoundAsset>,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let song = SONGS[DEFAULT_SONG_INDEX];
         let nyaa = Nyaa::<AppSound>::builder()
-            .sound(AppSound::Preview, SoundSource::static_bytes(song.bytes))
-            .build()
-            .unwrap_or_else(|error| panic!("could not create preview sound: {error}"));
+            .placeholders()
+            .unwrap_or_else(|error| panic!("could not create nyaa: {error}"));
 
-        let waveform = Waveform::builder_from_static_bytes(song.bytes)
-            .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
-            .ok();
-        let audio_assets = SONGS
-            .iter()
-            .map(|song| SoundAsset::new(song.native_path, song.wasm_url))
-            .collect();
-
-        Self {
+        let mut app = App {
             nyaa,
-            waveform,
+            waveform: None,
             waveform_window: WaveformWindow::default(),
             audio_mode: AudioMode::StaticBytes,
             selected_song: DEFAULT_SONG_INDEX,
-            audio_assets,
-        }
+        };
+        app.select_song(DEFAULT_SONG_INDEX);
+        app
     }
 
     fn sound(&self) -> Sound {
@@ -189,13 +187,7 @@ impl App {
         let song = SONGS[self.selected_song];
         match self.audio_mode {
             AudioMode::StaticBytes => SoundSource::static_bytes(song.bytes),
-            AudioMode::File => SoundSource::asset(self.audio_assets[self.selected_song].clone()),
-        }
-    }
-
-    fn play(&mut self) {
-        if let Err(error) = self.sound().play() {
-            log::error!("could not play audio: {error}");
+            AudioMode::File => SoundSource::asset(SOUND_ASSET_PER_SONG[self.selected_song].clone()),
         }
     }
 
@@ -679,9 +671,8 @@ impl eframe::App for App {
             );
         }
 
-        if sound.is_loading().unwrap_or(false) || sound.is_playing().unwrap_or(false) {
-            ui.ctx().request_repaint();
-        }
+        // repaint to update fps counter
+        ui.ctx().request_repaint();
 
         egui::Panel::top("top_panel").show(ui, |ui| {
             let fps = ui.ctx().input(|input| 1.0 / f64::from(input.unstable_dt));
@@ -982,7 +973,9 @@ impl eframe::App for App {
                                         log::error!("could not pause audio: {error}");
                                     }
                                 } else {
-                                    self.play();
+                                    if let Err(error) = self.sound().play() {
+                                        log::error!("could not play audio: {error}");
+                                    }
                                 }
                             }
 

@@ -1137,6 +1137,24 @@ impl<K: SoundKey> NyaaBuilder<K> {
         self
     }
 
+    /// Registers an empty sound for a key whose audio resource will be assigned later.
+    #[must_use]
+    pub fn placeholder(self, key: K) -> Self {
+        self.sound(key, SoundSource::Empty)
+    }
+
+    /// Constructs the scene while filling every unregistered key with an empty sound.
+    ///
+    /// Explicit sources and placeholders already registered on this builder are preserved.
+    pub fn placeholders(mut self) -> Result<Nyaa<K>, NyaaError> {
+        for &key in K::ALL {
+            if !self.sounds.iter().any(|(candidate, _)| *candidate == key) {
+                self.sounds.push((key, SoundSource::Empty));
+            }
+        }
+        self.build()
+    }
+
     /// Validates the schema and constructs a scene containing every required sound.
     pub fn build(mut self) -> Result<Nyaa<K>, NyaaError> {
         let dynamic = Nyaa::from_output(self.output, self.preferred_backend);
@@ -1358,6 +1376,7 @@ impl Sound {
 
         if !sound.source_loaded {
             match &sound.source {
+                SoundSource::Empty => return Err(NyaaError::NoAudioSource),
                 SoundSource::Asset(asset) => {
                     let asset = asset.clone();
                     sound.start_asset_playback(&asset)?;
@@ -2012,6 +2031,36 @@ mod tests {
             nyaa.find_sound("music/battle/theme").unwrap().id(),
             theme.id()
         );
+    }
+
+    #[test]
+    fn typed_scene_can_create_selected_or_all_placeholders() {
+        let mixed = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+            .placeholder(TestSound::Preview)
+            .sound(
+                TestSound::BattleTheme,
+                SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            )
+            .build()
+            .unwrap();
+        assert!(matches!(
+            mixed.sound(TestSound::Preview).source().unwrap(),
+            SoundSource::Empty
+        ));
+        assert!(matches!(
+            mixed.sound(TestSound::BattleTheme).source().unwrap(),
+            SoundSource::StaticBytes(_)
+        ));
+
+        let placeholders = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+            .placeholders()
+            .unwrap();
+        for key in TestSound::ALL {
+            assert!(matches!(
+                placeholders.sound(*key).source().unwrap(),
+                SoundSource::Empty
+            ));
+        }
     }
 
     #[test]
