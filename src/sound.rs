@@ -887,7 +887,7 @@ impl SoundNode {
             .max(Duration::ZERO)
     }
 
-    /// Attempts to produce a valid range for a seek slider, even if the duration is unknown.
+    /// Attempts to produce a valid range suitable for a seek slider, even if the duration is unknown.
     ///
     /// Will return `0.0..=1.0` if the duration is unknown, otherwise returns `0.0..=duration`.
     pub fn seek_range(&self) -> std::ops::RangeInclusive<f64> {

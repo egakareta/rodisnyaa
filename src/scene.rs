@@ -938,7 +938,7 @@ impl<K> Nyaa<K> {
     /// Returns the master volume multiplier.
     pub fn volume(&self) -> f32 {
         self.root_group()
-            .volume()
+            .local_volume()
             .expect("the root sound group always exists")
     }
 
@@ -1305,7 +1305,7 @@ impl Sound {
 
     /// Replaces the encoded source without starting playback.
     ///
-    /// Setting the same underlying resource again is a no-op and preserves the current timeline.
+    /// Setting the same underlying resource again is a no-op.
     pub fn set_source(&self, source: impl Into<SoundSource>) -> Result<(), NyaaError> {
         let source = source.into();
         let state = self.state()?;
@@ -1409,7 +1409,9 @@ impl Sound {
         Ok(())
     }
 
-    /// Pauses this sound independently of its group pause gates.
+    /// Pauses this sound, keeping its current position.
+    ///
+    /// Pauses regardless of its group pause state, if any.
     pub fn pause(&self) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1420,7 +1422,7 @@ impl Sound {
         Ok(())
     }
 
-    /// Resumes this sound unless one of its ancestor groups remains paused.
+    /// Resumes this sound unless one of its ancestor groups, if any, remains paused.
     pub fn resume(&self) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1434,7 +1436,7 @@ impl Sound {
         Ok(())
     }
 
-    /// Stops this sound, retains its source, and resets its position.
+    /// Stops this sound and resets its position, retaining its source.
     pub fn stop(&self) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1457,7 +1459,10 @@ impl Sound {
         Ok(())
     }
 
-    /// Seeks within this sound using seconds.
+    /// Seek within this sound without changing its intended pause state.
+    ///
+    /// Similar to `try_seek(Duration::from_secs_f64(position_secs))`,
+    /// but can error for invalid positions.
     pub fn try_seek_secs(&self, position_secs: f64) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1466,7 +1471,7 @@ impl Sound {
         Ok(())
     }
 
-    /// Returns the current playback lifecycle state.
+    /// Returns the current playback state.
     pub fn playback_state(&self) -> Result<PlaybackState, NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1493,17 +1498,17 @@ impl Sound {
         Ok(())
     }
 
-    /// Returns whether this sound is currently loading.
+    /// Returns whether this sound is currently [`PlaybackState::Loading`].
     pub fn is_loading(&self) -> Result<bool, NyaaError> {
         Ok(self.playback_state()? == PlaybackState::Loading)
     }
 
-    /// Returns whether this sound is currently playing.
+    /// Returns whether this sound is currently [`PlaybackState::Playing`].
     pub fn is_playing(&self) -> Result<bool, NyaaError> {
         Ok(self.playback_state()? == PlaybackState::Playing)
     }
 
-    /// Returns whether this sound is currently paused.
+    /// Returns whether this sound is currently [`PlaybackState::Paused`].
     pub fn is_paused(&self) -> Result<bool, NyaaError> {
         Ok(self.playback_state()? == PlaybackState::Paused)
     }
@@ -1539,6 +1544,8 @@ impl Sound {
     }
 
     /// Returns the current position clamped to the known duration.
+    ///
+    /// This is useful for user input.
     pub fn clamped_position(&self) -> Result<Duration, NyaaError> {
         Ok(self
             .state()?
@@ -1548,7 +1555,9 @@ impl Sound {
             .clamped_position())
     }
 
-    /// Returns a range suitable for a seek control.
+    /// Attempts to produce a valid range suitable for a seek slider, even if the duration is unknown.
+    ///
+    /// Will return `0.0..=1.0` if the duration is unknown, otherwise returns `0.0..=duration`.
     pub fn seek_range(&self) -> Result<std::ops::RangeInclusive<f64>, NyaaError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.seek_range())
     }
@@ -1564,8 +1573,8 @@ impl Sound {
         Ok(())
     }
 
-    /// Returns this sound's local volume multiplier.
-    pub fn volume(&self) -> Result<f32, NyaaError> {
+    /// Returns this sound's volume before group and master multipliers.
+    pub fn local_volume(&self) -> Result<f32, NyaaError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.volume())
     }
 
@@ -1861,7 +1870,7 @@ impl SoundGroup {
     }
 
     /// Returns this group's local volume multiplier.
-    pub fn volume(&self) -> Result<f32, NyaaError> {
+    pub fn local_volume(&self) -> Result<f32, NyaaError> {
         Ok(self.state()?.lock().unwrap().group(self.id)?.volume)
     }
 
@@ -2203,13 +2212,13 @@ mod tests {
         theme.set_speed(1.25).unwrap();
 
         assert_eq!(nyaa.volume(), 0.8);
-        assert_eq!(music.volume().unwrap(), 0.5);
-        assert_eq!(theme.volume().unwrap(), 0.7);
+        assert_eq!(music.local_volume().unwrap(), 0.5);
+        assert_eq!(theme.local_volume().unwrap(), 0.7);
         assert!((theme.effective_volume().unwrap() - 0.8 * 0.5 * 0.7).abs() < f32::EPSILON);
         assert_eq!(theme.speed().unwrap(), 1.25);
 
         music.set_volume(0.25).unwrap();
-        assert_eq!(theme.volume().unwrap(), 0.7);
+        assert_eq!(theme.local_volume().unwrap(), 0.7);
         assert!((theme.effective_volume().unwrap() - 0.8 * 0.25 * 0.7).abs() < f32::EPSILON);
         music.set_muted(true).unwrap();
         assert_eq!(theme.effective_volume().unwrap(), 0.0);

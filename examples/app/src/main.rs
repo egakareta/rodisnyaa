@@ -110,14 +110,14 @@ static SOUND_ASSET_PER_SONG: LazyLock<Vec<SoundAsset>> = LazyLock::new(|| {
 const DEFAULT_SONG_INDEX: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AudioMode {
+enum MusicMode {
     StaticBytes,
     File,
 }
 
 rodisnyaa::sound_key! {
     enum AppSound {
-        Preview => "preview",
+        Music => "music",
     }
 }
 
@@ -158,7 +158,7 @@ struct App {
     nyaa: Nyaa<AppSound>,
     waveform: Option<WaveformBuilder>,
     waveform_window: WaveformWindow,
-    audio_mode: AudioMode,
+    music_mode: MusicMode,
     selected_song: usize,
 }
 
@@ -172,35 +172,38 @@ impl App {
             nyaa,
             waveform: None,
             waveform_window: WaveformWindow::default(),
-            audio_mode: AudioMode::StaticBytes,
+            music_mode: MusicMode::StaticBytes,
             selected_song: DEFAULT_SONG_INDEX,
         };
         app.select_song(DEFAULT_SONG_INDEX);
         app
     }
 
-    fn sound(&self) -> Sound {
-        self.nyaa.sound(AppSound::Preview)
+    /// Get the [`Sound`] for the music track.
+    pub fn music(&self) -> Sound {
+        self.nyaa.sound(AppSound::Music)
     }
 
-    fn selected_source(&self) -> SoundSource {
+    /// Get the [`SoundSource`] for the currently selected song based on the current [`MusicMode`].
+    pub fn selected_source(&self) -> SoundSource {
         let song = SONGS[self.selected_song];
-        match self.audio_mode {
-            AudioMode::StaticBytes => SoundSource::static_bytes(song.bytes),
-            AudioMode::File => SoundSource::asset(SOUND_ASSET_PER_SONG[self.selected_song].clone()),
+        match self.music_mode {
+            MusicMode::StaticBytes => SoundSource::static_bytes(song.bytes),
+            MusicMode::File => SoundSource::asset(SOUND_ASSET_PER_SONG[self.selected_song].clone()),
         }
     }
 
-    fn select_song(&mut self, selected_song: usize) {
+    //// Stops current song and loads the new one. Also changes the waveform to match the new song.
+    pub fn select_song(&mut self, selected_song: usize) {
         let song = SONGS[selected_song];
 
-        if let Err(error) = self.sound().stop() {
+        if let Err(error) = self.music().stop() {
             log::error!("could not stop audio: {error}");
         }
         self.selected_song = selected_song;
         self.waveform_window = WaveformWindow::default();
 
-        if let Err(error) = self.sound().set_source(self.selected_source()) {
+        if let Err(error) = self.music().set_source(self.selected_source()) {
             log::error!("could not load audio duration: {error}");
         }
 
@@ -209,13 +212,10 @@ impl App {
             .ok();
     }
 
-    fn select_audio_mode(&mut self, audio_mode: AudioMode) {
-        if self.audio_mode == audio_mode {
-            return;
-        }
-
-        self.audio_mode = audio_mode;
-        if let Err(error) = self.sound().set_source(self.selected_source()) {
+    /// Replaces the current [`SoundSource`] for the music track with a new one based on the current [`MusicMode`].
+    pub fn select_music_mode(&mut self, music_mode: MusicMode) {
+        self.music_mode = music_mode;
+        if let Err(error) = self.music().set_source(self.selected_source()) {
             log::error!("could not change audio mode: {error}");
         }
     }
@@ -233,7 +233,7 @@ impl App {
     }
 
     fn show_effects(&mut self, ui: &mut egui::Ui) {
-        let sound = self.sound();
+        let sound = self.music();
         let mut effects = sound.effects().unwrap_or_default();
         let old_effects = effects;
 
@@ -475,7 +475,7 @@ impl App {
     }
 
     fn show_waveform(&mut self, ui: &mut egui::Ui) {
-        let sound = self.sound();
+        let sound = self.music();
         let Some(waveform) = self.waveform.as_mut() else {
             ui.label("Waveform unavailable");
             return;
@@ -662,7 +662,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let sound = self.sound();
+        let sound = self.music();
         for failure in self.nyaa.update() {
             log::error!(
                 "could not update sound {:?}: {}",
@@ -813,26 +813,26 @@ impl eframe::App for App {
                             .add_sized(
                                 [tab_width, tab_height],
                                 egui::Button::selectable(
-                                    self.audio_mode == AudioMode::StaticBytes,
+                                    self.music_mode == MusicMode::StaticBytes,
                                     "Static bytes",
                                 ),
                             )
                             .clicked()
                         {
-                            self.select_audio_mode(AudioMode::StaticBytes);
+                            self.select_music_mode(MusicMode::StaticBytes);
                         }
 
                         if ui
                             .add_sized(
                                 [tab_width, tab_height],
                                 egui::Button::selectable(
-                                    self.audio_mode == AudioMode::File,
+                                    self.music_mode == MusicMode::File,
                                     "File",
                                 ),
                             )
                             .clicked()
                         {
-                            self.select_audio_mode(AudioMode::File);
+                            self.select_music_mode(MusicMode::File);
                         }
                     });
 
@@ -969,11 +969,11 @@ impl eframe::App for App {
 
                             if button.clicked() {
                                 if sound.is_playing().unwrap_or(false) {
-                                    if let Err(error) = self.sound().pause() {
+                                    if let Err(error) = self.music().pause() {
                                         log::error!("could not pause audio: {error}");
                                     }
                                 } else {
-                                    if let Err(error) = self.sound().play() {
+                                    if let Err(error) = self.music().play() {
                                         log::error!("could not play audio: {error}");
                                     }
                                 }
@@ -1007,7 +1007,7 @@ impl eframe::App for App {
                                     }
                                 }
 
-                                let mut volume = sound.volume().unwrap_or(1.0) * 100.0;
+                                let mut volume = sound.local_volume().unwrap_or(1.0) * 100.0;
                                 let volume_width = columns[1].available_width();
                                 columns[1].label(format!("Volume: {volume:.0}%"));
                                 columns[1].spacing_mut().slider_width = volume_width;
