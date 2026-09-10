@@ -189,6 +189,30 @@ impl SoundSource {
     pub fn asset(asset: SoundAsset) -> Self {
         Self::Asset(asset)
     }
+
+    /// Returns the byte length of this source.
+    pub fn len(&self) -> Option<u64> {
+        match self {
+            Self::Empty => Some(0),
+            Self::StaticBytes(bytes) => Some(bytes.len() as u64),
+            Self::SharedBytes(bytes) => Some(bytes.len() as u64),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::File(path) => std::fs::metadata(path).ok().map(|metadata| metadata.len()),
+            Self::Asset(asset) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    std::fs::metadata(asset.native_path())
+                        .ok()
+                        .map(|metadata| metadata.len())
+                }
+
+                #[cfg(target_arch = "wasm32")]
+                {
+                    asset.cached_browser_bytes().map(|bytes| bytes.len() as u64)
+                }
+            }
+        }
+    }
 }
 
 impl Default for SoundSource {

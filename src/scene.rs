@@ -1303,6 +1303,11 @@ impl Sound {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.source.clone())
     }
 
+    /// Returns the byte length of this sound's source.
+    pub fn len(&self) -> Result<Option<u64>, NyaaError> {
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.source.len())
+    }
+
     /// Replaces the encoded source without starting playback.
     ///
     /// Setting the same underlying resource again is a no-op.

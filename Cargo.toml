@@ -55,6 +55,10 @@ nightly = ["cpal/audioworklet", "parking_lot_core/nightly"]
 vorbis = ["rodio/vorbis"]
 wav = ["rodio/wav"]
 
+[dev-dependencies]
+fastrand = { version = "2", features = ["js"] }
+include_dir = "0.7"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { version = "0.17", features = ["wasm-bindgen"] }
 wasm-bindgen = "0.2"

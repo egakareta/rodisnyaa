@@ -1,8 +1,10 @@
+use rodisnyaa::{Nyaa, SoundSource};
+
 static AUDIO: &[u8] = include_bytes!("polar 240 yay.mp3");
 
 fn main() -> Result<(), rodisnyaa::NyaaError> {
-    let nyaa = rodisnyaa::Nyaa::new();
-    let sound = nyaa.create_sound("music", rodisnyaa::SoundSource::static_bytes(AUDIO))?;
+    let nyaa = Nyaa::new();
+    let sound = nyaa.create_sound("music", SoundSource::static_bytes(AUDIO))?;
 
     sound.set_volume(0.8)?;
     sound.set_speed(0.9)?;
