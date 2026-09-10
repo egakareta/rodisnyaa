@@ -44,7 +44,7 @@ thiserror = "2"
 web-time = "1"
 
 [features]
-default = ["cli", "mp3", "wav"]
+default = ["cli", "mp3", "vorbis", "wav"]
 asio = ["cpal/asio"]
 cli = ["dep:clap"]
 flac = ["rodio/flac"]
