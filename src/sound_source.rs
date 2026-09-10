@@ -1,8 +1,22 @@
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
 use std::{
-    fmt::{Debug, Formatter, Result},
+    fmt::{Debug, Formatter},
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+#[cfg(target_arch = "wasm32")]
+use js_sys::Uint8Array;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use web_sys::Response;
+
+#[cfg(target_arch = "wasm32")]
+use crate::NyaaError;
 
 /// An audio file with locations for native and browser targets.
 ///
@@ -18,7 +32,7 @@ pub struct SoundAsset {
 }
 
 impl Debug for SoundAsset {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("SoundAsset")
             .field("native_path", &self.native_path)
@@ -84,7 +98,7 @@ impl SoundAsset {
 
     /// Clears bytes cached after loading this asset in a browser.
     ///
-    /// Clones of this asset share the same cache. Players and waveform builders can retain their
+    /// Clones of this asset share the same cache. Sounds and waveform builders can retain their
     /// own references independently, and WebAudio may release a stopped decoder asynchronously.
     pub fn clear_browser_cache(&self) {
         #[cfg(target_arch = "wasm32")]
@@ -92,7 +106,7 @@ impl SoundAsset {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn cached_browser_bytes(&self) -> Option<Arc<[u8]>> {
+    pub(crate) fn cached_browser_bytes(&self) -> Option<Arc<[u8]>> {
         self.browser_bytes.lock().unwrap().clone()
     }
 
@@ -114,7 +128,7 @@ impl SoundAsset {
     }
 }
 
-/// An encoded audio source retained by a [`Sound`].
+/// An encoded audio source retained by a [`crate::Sound`].
 #[derive(Clone, Debug)]
 pub enum SoundSource {
     /// Encoded bytes with a static lifetime, such as bytes produced by `include_bytes!`.
@@ -129,6 +143,19 @@ pub enum SoundSource {
 }
 
 impl SoundSource {
+    pub(crate) fn same_resource(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::StaticBytes(left), Self::StaticBytes(right)) => std::ptr::eq(*left, *right),
+            (Self::SharedBytes(left), Self::SharedBytes(right)) => Arc::ptr_eq(left, right),
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::File(left), Self::File(right)) => left == right,
+            (Self::Asset(left), Self::Asset(right)) => {
+                left.native_path == right.native_path && left.wasm_url == right.wasm_url
+            }
+            _ => false,
+        }
+    }
+
     /// Creates a source from encoded bytes with a static lifetime.
     pub fn static_bytes(bytes: &'static [u8]) -> Self {
         Self::StaticBytes(bytes)

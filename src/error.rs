@@ -41,6 +41,22 @@ pub enum NyaaError {
     #[error("a sound or group named {0:?} already exists under this parent")]
     DuplicateName(String),
 
+    /// A typed scene was built without registering one of its declared sounds.
+    #[error("required sound {0:?} was not registered")]
+    MissingRequiredSound(&'static str),
+
+    /// Two typed sound keys declare the same path.
+    #[error("multiple required sound keys use path {0:?}")]
+    DuplicateRequiredSoundPath(&'static str),
+
+    /// A sound was registered with a key absent from [`crate::SoundKey::ALL`].
+    #[error("sound key for path {0:?} is absent from SoundKey::ALL")]
+    UnknownRequiredSound(&'static str),
+
+    /// Required sounds are permanent members of their typed scene.
+    #[error("a required sound cannot be removed")]
+    RequiredSound,
+
     /// A sound handle no longer refers to a live sound.
     #[error("the sound handle is no longer valid")]
     InvalidSoundHandle,
@@ -54,7 +70,7 @@ pub enum NyaaError {
     InvalidSoundGroupHandle,
 
     /// Two handles from different audio roots were used together.
-    #[error("sounds and groups must belong to the same SoundPlayer")]
+    #[error("sounds and groups must belong to the same scene")]
     DifferentNyaa,
 
     /// Reparenting a group would make it one of its own ancestors.

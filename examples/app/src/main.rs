@@ -1,15 +1,15 @@
-use web_time::Duration;
-
-use eframe::egui;
-use rodisnyaa::{
-    format_timestamp_secs, parse_timestamp, SoundAsset, SoundEffects, AutomaticGainEffect, Backend,
-    Device, DistortionEffect, FilterEffect, LimiterEffect, Nyaa, Output, ReverbEffect, Sound,
-    SoundSource, Waveform, WaveformBuilder,
-};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+use eframe::egui;
+use rodisnyaa::{
+    format_timestamp_secs, parse_timestamp, AutomaticGainEffect, Backend, Device, DistortionEffect,
+    FilterEffect, LimiterEffect, Nyaa, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
+    SoundSource, Waveform, WaveformBuilder,
+};
+use web_time::Duration;
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -107,6 +107,12 @@ enum AudioMode {
     File,
 }
 
+rodisnyaa::sound_key! {
+    enum AppSound {
+        Preview => "preview",
+    }
+}
+
 struct WaveformWindow {
     visible_secs: f64,
     view_start_secs: f64,
@@ -141,21 +147,20 @@ impl WaveformWindow {
 }
 
 struct App {
-    nyaa: Nyaa,
+    nyaa: Nyaa<AppSound>,
     waveform: Option<WaveformBuilder>,
     waveform_window: WaveformWindow,
     audio_mode: AudioMode,
     selected_song: usize,
     audio_assets: Vec<SoundAsset>,
-    effects: SoundEffects,
 }
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let nyaa = Nyaa::new();
         let song = SONGS[DEFAULT_SONG_INDEX];
-
-        nyaa.create_sound("preview", SoundSource::static_bytes(song.bytes))
+        let nyaa = Nyaa::<AppSound>::builder()
+            .sound(AppSound::Preview, SoundSource::static_bytes(song.bytes))
+            .build()
             .unwrap_or_else(|error| panic!("could not create preview sound: {error}"));
 
         let waveform = Waveform::builder_from_static_bytes(song.bytes)
@@ -173,26 +178,23 @@ impl App {
             audio_mode: AudioMode::StaticBytes,
             selected_song: DEFAULT_SONG_INDEX,
             audio_assets,
-            effects: SoundEffects::default(),
         }
     }
 
     fn sound(&self) -> Sound {
-        self.nyaa
-            .sound("preview")
-            .expect("the preview sound is created with the app")
+        self.nyaa.sound(AppSound::Preview)
+    }
+
+    fn selected_source(&self) -> SoundSource {
+        let song = SONGS[self.selected_song];
+        match self.audio_mode {
+            AudioMode::StaticBytes => SoundSource::static_bytes(song.bytes),
+            AudioMode::File => SoundSource::asset(self.audio_assets[self.selected_song].clone()),
+        }
     }
 
     fn play(&mut self) {
-        let song = SONGS[self.selected_song];
-        let sound = self.sound();
-        let source = match self.audio_mode {
-            AudioMode::StaticBytes => SoundSource::static_bytes(song.bytes),
-            AudioMode::File => SoundSource::asset(self.audio_assets[self.selected_song].clone()),
-        };
-        let result = sound.set_source(source).and_then(|()| sound.play());
-
-        if let Err(error) = result {
+        if let Err(error) = self.sound().play() {
             log::error!("could not play audio: {error}");
         }
     }
@@ -206,16 +208,24 @@ impl App {
         self.selected_song = selected_song;
         self.waveform_window = WaveformWindow::default();
 
-        if let Err(error) = self
-            .sound()
-            .set_source(SoundSource::static_bytes(song.bytes))
-        {
+        if let Err(error) = self.sound().set_source(self.selected_source()) {
             log::error!("could not load audio duration: {error}");
         }
 
         self.waveform = Waveform::builder_from_static_bytes(song.bytes)
             .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
             .ok();
+    }
+
+    fn select_audio_mode(&mut self, audio_mode: AudioMode) {
+        if self.audio_mode == audio_mode {
+            return;
+        }
+
+        self.audio_mode = audio_mode;
+        if let Err(error) = self.sound().set_source(self.selected_source()) {
+            log::error!("could not change audio mode: {error}");
+        }
     }
 
     fn select_backend(&mut self, backend: Backend) {
@@ -230,14 +240,11 @@ impl App {
         }
     }
 
-    fn stop(&mut self) {
-        if let Err(error) = self.sound().stop() {
-            log::error!("could not stop audio: {error}");
-        }
-    }
-
     fn show_effects(&mut self, ui: &mut egui::Ui) {
         let sound = self.sound();
+        let mut effects = sound.effects().unwrap_or_default();
+        let old_effects = effects;
+
         egui::CollapsingHeader::new("Post processing")
             .default_open(false)
             .show(ui, |ui| {
@@ -247,30 +254,30 @@ impl App {
                     .show(ui, |ui| {
                         ui.label("Input gain");
                         ui.add(
-                            egui::Slider::new(&mut self.effects.input_gain, 0.0..=4.0)
+                            egui::Slider::new(&mut effects.input_gain, 0.0..=4.0)
                                 .suffix("x")
                                 .logarithmic(true),
                         );
                         ui.end_row();
 
                         ui.label("Fade in");
-                        let mut fade_in_secs = self.effects.fade_in.as_secs_f64();
+                        let mut fade_in_secs = effects.fade_in.as_secs_f64();
                         if ui
                             .add(egui::Slider::new(&mut fade_in_secs, 0.0..=5.0).suffix(" s"))
                             .changed()
                         {
-                            self.effects.fade_in = Duration::from_secs_f64(fade_in_secs);
+                            effects.fade_in = Duration::from_secs_f64(fade_in_secs);
                         }
                         ui.end_row();
 
-                        let mut high_pass_enabled = self.effects.high_pass.is_some();
+                        let mut high_pass_enabled = effects.high_pass.is_some();
                         if ui.checkbox(&mut high_pass_enabled, "High-pass").changed() {
-                            self.effects.high_pass = high_pass_enabled.then_some(FilterEffect {
+                            effects.high_pass = high_pass_enabled.then_some(FilterEffect {
                                 frequency: 120,
                                 ..FilterEffect::default()
                             });
                         }
-                        if let Some(effect) = self.effects.high_pass.as_mut() {
+                        if let Some(effect) = effects.high_pass.as_mut() {
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::Slider::new(&mut effect.frequency, 20..=5_000)
@@ -284,14 +291,14 @@ impl App {
                         }
                         ui.end_row();
 
-                        let mut low_pass_enabled = self.effects.low_pass.is_some();
+                        let mut low_pass_enabled = effects.low_pass.is_some();
                         if ui.checkbox(&mut low_pass_enabled, "Low-pass").changed() {
-                            self.effects.low_pass = low_pass_enabled.then_some(FilterEffect {
+                            effects.low_pass = low_pass_enabled.then_some(FilterEffect {
                                 frequency: 8_000,
                                 ..FilterEffect::default()
                             });
                         }
-                        if let Some(effect) = self.effects.low_pass.as_mut() {
+                        if let Some(effect) = effects.low_pass.as_mut() {
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::Slider::new(&mut effect.frequency, 100..=20_000)
@@ -305,12 +312,12 @@ impl App {
                         }
                         ui.end_row();
 
-                        let mut distortion_enabled = self.effects.distortion.is_some();
+                        let mut distortion_enabled = effects.distortion.is_some();
                         if ui.checkbox(&mut distortion_enabled, "Distortion").changed() {
-                            self.effects.distortion =
+                            effects.distortion =
                                 distortion_enabled.then_some(DistortionEffect::default());
                         }
-                        if let Some(effect) = self.effects.distortion.as_mut() {
+                        if let Some(effect) = effects.distortion.as_mut() {
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::Slider::new(&mut effect.gain, 1.0..=20.0)
@@ -327,15 +334,15 @@ impl App {
                         }
                         ui.end_row();
 
-                        let mut automatic_gain_enabled = self.effects.automatic_gain.is_some();
+                        let mut automatic_gain_enabled = effects.automatic_gain.is_some();
                         if ui
                             .checkbox(&mut automatic_gain_enabled, "Automatic gain")
                             .changed()
                         {
-                            self.effects.automatic_gain =
+                            effects.automatic_gain =
                                 automatic_gain_enabled.then_some(AutomaticGainEffect::default());
                         }
-                        if let Some(effect) = self.effects.automatic_gain.as_mut() {
+                        if let Some(effect) = effects.automatic_gain.as_mut() {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.add(
@@ -378,11 +385,11 @@ impl App {
                         }
                         ui.end_row();
 
-                        let mut reverb_enabled = self.effects.reverb.is_some();
+                        let mut reverb_enabled = effects.reverb.is_some();
                         if ui.checkbox(&mut reverb_enabled, "Reverb").changed() {
-                            self.effects.reverb = reverb_enabled.then_some(ReverbEffect::default());
+                            effects.reverb = reverb_enabled.then_some(ReverbEffect::default());
                         }
-                        if let Some(effect) = self.effects.reverb.as_mut() {
+                        if let Some(effect) = effects.reverb.as_mut() {
                             let mut delay_ms = effect.delay.as_secs_f64() * 1_000.0;
                             ui.horizontal(|ui| {
                                 if ui
@@ -406,12 +413,11 @@ impl App {
                         }
                         ui.end_row();
 
-                        let mut limiter_enabled = self.effects.limiter.is_some();
+                        let mut limiter_enabled = effects.limiter.is_some();
                         if ui.checkbox(&mut limiter_enabled, "Limiter").changed() {
-                            self.effects.limiter =
-                                limiter_enabled.then_some(LimiterEffect::default());
+                            effects.limiter = limiter_enabled.then_some(LimiterEffect::default());
                         }
-                        if let Some(effect) = self.effects.limiter.as_mut() {
+                        if let Some(effect) = effects.limiter.as_mut() {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.add(
@@ -462,28 +468,18 @@ impl App {
                     });
 
                 ui.horizontal(|ui| {
-                    let has_changes = self.effects != sound.effects().unwrap_or_default();
-
-                    if ui
-                        .add_enabled(has_changes, egui::Button::new("Apply"))
-                        .clicked()
-                    {
-                        if let Err(error) = sound.set_effects(self.effects) {
-                            log::error!("could not apply audio effects: {error}");
-                        }
-                    }
-
                     if ui.button("Reset").clicked() {
-                        let effects = SoundEffects::default();
-
-                        if let Err(error) = sound.set_effects(effects) {
+                        if let Err(error) = sound.set_effects(SoundEffects::default()) {
                             log::error!("could not reset audio effects: {error}");
-                        } else {
-                            self.effects = effects;
                         }
                     }
                 });
             });
+        if old_effects != effects {
+            if let Err(error) = sound.set_effects(effects) {
+                log::error!("could not apply audio effects: {error}");
+            }
+        }
     }
 
     fn show_waveform(&mut self, ui: &mut egui::Ui) {
@@ -832,7 +828,7 @@ impl eframe::App for App {
                             )
                             .clicked()
                         {
-                            self.audio_mode = AudioMode::StaticBytes;
+                            self.select_audio_mode(AudioMode::StaticBytes);
                         }
 
                         if ui
@@ -845,7 +841,7 @@ impl eframe::App for App {
                             )
                             .clicked()
                         {
-                            self.audio_mode = AudioMode::File;
+                            self.select_audio_mode(AudioMode::File);
                         }
                     });
 
@@ -942,7 +938,7 @@ impl eframe::App for App {
                                     .on_hover_text(if is_loading {
                                         "Loading"
                                     } else if sound.is_playing().unwrap_or(false) {
-                                        "Stop"
+                                        "Pause"
                                     } else {
                                         "Play"
                                     });
@@ -982,7 +978,9 @@ impl eframe::App for App {
 
                             if button.clicked() {
                                 if sound.is_playing().unwrap_or(false) {
-                                    self.stop();
+                                    if let Err(error) = self.sound().pause() {
+                                        log::error!("could not pause audio: {error}");
+                                    }
                                 } else {
                                     self.play();
                                 }

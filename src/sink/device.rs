@@ -4,13 +4,13 @@ use crate::Backend;
 
 /// An individual output device such as speakers, headphones, or a virtual device.
 ///
-/// Values are obtained from [`Output::available_devices`] or
-/// [`Output::available_devices_for_backend`] and can be passed to
-/// [`Output::try_new_with_device`] or [`crate::SoundPlayer::switch_device`].
+/// Values are obtained from [`crate::Output::available_devices`] or
+/// [`crate::Output::available_devices_for_backend`] and can be passed to
+/// [`crate::Output::try_new_with_device`] or [`crate::Nyaa::switch_device`].
 ///
 /// Devices are identified by their CPAL device id when the platform provides one and fall back
 /// to name matching otherwise. A device obtained from enumeration may no longer exist when it is
-/// opened, in which case opening returns [`OutputError::DeviceNotFound`].
+/// opened, in which case opening returns [`crate::OutputError::DeviceNotFound`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub(crate) backend: Backend,

@@ -8,15 +8,15 @@ use rodio::{DeviceSinkBuilder, DeviceTrait, MixerDeviceSink, Player};
 
 use crate::{Backend, Device, OutputError};
 
-/// A cloneable handle to an audio output sink owned by a [`crate::SoundPlayer`] audio scene.
+/// A cloneable handle to an audio output sink owned by a [`crate::Nyaa`] audio scene.
 ///
-/// Pass an output to [`crate::SoundPlayer::new_with_output`] to select or reuse a device sink.
+/// Pass an output to [`crate::Nyaa::new_with_output`] to select or reuse a device sink.
 ///
 /// ```no_run
-/// use rodisnyaa::{Output, SoundPlayer};
+/// use rodisnyaa::{Nyaa, Output};
 ///
 /// let output = Output::new();
-/// let nyaa = SoundPlayer::new_with_output(output);
+/// let nyaa = Nyaa::new_with_output(output);
 /// ```
 #[derive(Clone)]
 pub struct Output {
@@ -74,8 +74,7 @@ pub fn switch_outputs_to_backend<'a>(
 impl Output {
     /// Opens the default audio output when the platform permits it.
     ///
-    /// Follows [`Output::global_preferred_backend`] when one is set, otherwise
-    /// uses the system default. Browser targets defer opening the output until
+    /// Uses the system default. Browser targets defer opening the output until
     /// playback starts so it can happen in response to a user gesture.
     pub fn new() -> Self {
         let backend = Some(rodio::cpal::default_host().id());
@@ -513,7 +512,7 @@ mod tests {
     use crate::{Output, switch_outputs_to_device};
 
     #[test]
-    fn switching_many_players_to_the_current_device_is_a_noop() {
+    fn switching_many_outputs_to_the_current_device_is_a_noop() {
         let Some(device) = Output::new_deferred(None).device() else {
             eprintln!("Skipping batch assertions: no output device reported");
             return;

@@ -8,7 +8,7 @@ use std::{num::NonZeroUsize, ops::Range, sync::Arc, time::Duration};
 use rodio::Decoder;
 use rodio::Source;
 
-use crate::{NyaaError, SoundAsset, player::SoundPlayer};
+use crate::{NyaaError, SoundAsset, decoder};
 
 /// The minimum and maximum sample amplitude in a section of an audio track.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -165,9 +165,7 @@ impl Waveform {
     /// Prefer [`Self::builder_from_shared_bytes`] for long tracks to avoid blocking.
     pub fn from_shared_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
-        Ok(Self::from_source(SoundPlayer::decoder_from_shared_bytes(
-            bytes,
-        )?))
+        Ok(Self::from_source(decoder::from_shared_bytes(bytes)?))
     }
 
     /// Starts decoding shared bytes into a waveform incrementally.
@@ -175,26 +173,24 @@ impl Waveform {
         bytes: impl AsRef<[u8]>,
     ) -> Result<WaveformBuilder, NyaaError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
-        Ok(Self::builder_from_source(
-            SoundPlayer::decoder_from_shared_bytes(bytes)?,
-        ))
+        Ok(Self::builder_from_source(decoder::from_shared_bytes(
+            bytes,
+        )?))
     }
 
     /// Decodes static bytes into a waveform without copying the encoded audio onto the heap.
     ///
     /// Prefer [`Self::builder_from_static_bytes`] for long tracks to avoid blocking.
     pub fn from_static_bytes(bytes: &'static [u8]) -> Result<Self, NyaaError> {
-        Ok(Self::from_source(SoundPlayer::decoder_from_static_bytes(
-            bytes,
-        )?))
+        Ok(Self::from_source(decoder::from_static_bytes(bytes)?))
     }
 
     /// Starts decoding static bytes into a waveform incrementally without copying the encoded
     /// audio onto the heap.
     pub fn builder_from_static_bytes(bytes: &'static [u8]) -> Result<WaveformBuilder, NyaaError> {
-        Ok(Self::builder_from_source(
-            SoundPlayer::decoder_from_static_bytes(bytes)?,
-        ))
+        Ok(Self::builder_from_source(decoder::from_static_bytes(
+            bytes,
+        )?))
     }
 
     /// Decodes a file into a waveform.
@@ -229,9 +225,7 @@ impl Waveform {
         #[cfg(target_arch = "wasm32")]
         {
             let bytes = asset.load_browser_bytes().await?;
-            Ok(Self::from_source(SoundPlayer::decoder_from_shared_bytes(
-                bytes,
-            )?))
+            Ok(Self::from_source(decoder::from_shared_bytes(bytes)?))
         }
     }
 
@@ -245,9 +239,9 @@ impl Waveform {
         #[cfg(target_arch = "wasm32")]
         {
             let bytes = asset.load_browser_bytes().await?;
-            Ok(Self::builder_from_source(
-                SoundPlayer::decoder_from_shared_bytes(bytes)?,
-            ))
+            Ok(Self::builder_from_source(decoder::from_shared_bytes(
+                bytes,
+            )?))
         }
     }
 
@@ -800,7 +794,7 @@ pub fn decode_audio_to_waveform_streaming<F>(
 where
     F: FnMut(usize, Vec<f32>, u32),
 {
-    let source = SoundPlayer::decoder_from_shared_bytes(Arc::from(bytes))?;
+    let source = decoder::from_shared_bytes(Arc::from(bytes))?;
     let window_size = NonZeroUsize::new(window_size.max(1)).expect("clamped to nonzero");
     let mut builder = Waveform::builder_from_source_with_base_frames(source, window_size);
     let sample_rate = builder.sample_rate();

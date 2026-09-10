@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt,
     ops::Range,
     sync::{Arc, Mutex, Weak},
@@ -13,7 +13,7 @@ use rodio::{
 
 use crate::{
     Backend, Device, NyaaError, Output, OutputError, PlaybackEvent, PlaybackState, SoundEffects,
-    SoundSource, player::SoundPlayer,
+    SoundSource, sound::SoundNode,
 };
 
 const BUS_CHANNELS: u16 = 2;
@@ -34,6 +34,64 @@ pub struct SoundId {
 pub struct SoundGroupId {
     index: u32,
     generation: u32,
+}
+
+/// Declares the complete set of sounds that a typed [`Nyaa`] scene must contain.
+///
+/// `ALL` must contain every possible value exactly once. Each path is relative to the scene root;
+/// its final component names the sound and preceding components name its initial mixer groups.
+pub trait SoundKey: Copy + Eq + 'static {
+    /// Every key that must be registered before the scene can be built.
+    const ALL: &'static [Self];
+
+    /// Returns this sound's initial slash-separated path.
+    fn path(self) -> &'static str;
+}
+
+/// Declares an enum implementing [`SoundKey`].
+///
+/// ```
+/// rodisnyaa::sound_key! {
+///     pub enum AppSound {
+///         Preview => "preview",
+///         BattleTheme => "music/battle/theme",
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! sound_key {
+    (
+        $(#[$enum_meta:meta])*
+        $visibility:vis enum $name:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident => $path:literal
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[$enum_meta])*
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        $visibility enum $name {
+            $($(#[$variant_meta])* $variant),+
+        }
+
+        impl $crate::SoundKey for $name {
+            const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            fn path(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $path),+
+                }
+            }
+        }
+    };
+}
+
+/// A validated constructor for a typed [`Nyaa`] scene.
+pub struct NyaaBuilder<K: SoundKey> {
+    output: Output,
+    preferred_backend: Option<Backend>,
+    sounds: Vec<(K, SoundSource)>,
 }
 
 /// A playback event emitted by one sound in a [`Nyaa`] instance.
@@ -138,24 +196,12 @@ struct GroupEntry {
     pending_source: Option<Box<dyn Source<Item = f32> + Send>>,
 }
 
-struct SoundEntry {
-    name: String,
-    group: SoundGroupId,
-    source: SoundSource,
-    source_revision: u64,
-    source_loaded: bool,
-    player: SoundPlayer,
-    wants_playing: bool,
-    locally_paused: bool,
-    events: VecDeque<PlaybackEvent>,
-    event_capacity: usize,
-}
-
 struct NyaaState {
     output: Output,
     preferred_backend: Option<Backend>,
     groups: Arena<GroupEntry>,
-    sounds: Arena<SoundEntry>,
+    sounds: Arena<SoundNode>,
+    required_sounds: HashSet<SoundId>,
     root: SoundGroupId,
     events: VecDeque<NyaaEvent>,
     event_capacity: usize,
@@ -192,37 +238,6 @@ fn validate_speed(speed: f32) -> Result<(), NyaaError> {
     }
 }
 
-fn load_source(player: &mut SoundPlayer, source: &SoundSource) -> Result<bool, NyaaError> {
-    match source {
-        SoundSource::StaticBytes(bytes) => {
-            player.load_static_bytes(bytes)?;
-            Ok(true)
-        }
-        SoundSource::SharedBytes(bytes) => {
-            player.load_shared_arc_bytes(bytes.clone())?;
-            Ok(true)
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        SoundSource::File(path) => {
-            player.load_file(path)?;
-            Ok(true)
-        }
-        SoundSource::Asset(asset) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                player.load_file(asset.native_path())?;
-                Ok(true)
-            }
-
-            #[cfg(target_arch = "wasm32")]
-            {
-                let _ = asset;
-                Ok(false)
-            }
-        }
-    }
-}
-
 impl NyaaState {
     fn new(output: Output, preferred_backend: Option<Backend>) -> Self {
         let (root_mixer, root_source) = new_bus();
@@ -244,6 +259,7 @@ impl NyaaState {
             preferred_backend,
             groups,
             sounds: Arena::default(),
+            required_sounds: HashSet::new(),
             root,
             events: VecDeque::new(),
             event_capacity: usize::MAX,
@@ -264,13 +280,13 @@ impl NyaaState {
             .ok_or(NyaaError::InvalidSoundGroupHandle)
     }
 
-    fn sound(&self, id: SoundId) -> Result<&SoundEntry, NyaaError> {
+    fn sound(&self, id: SoundId) -> Result<&SoundNode, NyaaError> {
         self.sounds
             .get(id.index, id.generation)
             .ok_or(NyaaError::InvalidSoundHandle)
     }
 
-    fn sound_mut(&mut self, id: SoundId) -> Result<&mut SoundEntry, NyaaError> {
+    fn sound_mut(&mut self, id: SoundId) -> Result<&mut SoundNode, NyaaError> {
         self.sounds
             .get_mut(id.index, id.generation)
             .ok_or(NyaaError::InvalidSoundHandle)
@@ -369,7 +385,6 @@ impl NyaaState {
             self.attach_group_source(id, source);
         }
 
-        let output = self.output.clone();
         let sound_ids = self
             .sounds
             .ids()
@@ -389,8 +404,7 @@ impl NyaaState {
                 .clone();
             self.sound_mut(id)
                 .expect("enumerated sounds must remain valid")
-                .player
-                .replace_routing_preserving_playback(output.clone(), mixer);
+                .replace_routing_preserving_playback(mixer);
             self.collect_sound_events(id);
         }
     }
@@ -547,8 +561,8 @@ impl NyaaState {
 
     fn collect_sound_events(&mut self, id: SoundId) {
         loop {
-            let event = match self.sound(id) {
-                Ok(sound) => sound.player.poll_event(),
+            let event = match self.sound_mut(id) {
+                Ok(sound) => sound.poll_scene_event(),
                 Err(_) => return,
             };
             let Some(event) = event else {
@@ -567,13 +581,6 @@ impl NyaaState {
             ) {
                 entry.wants_playing = false;
             }
-            if entry.event_capacity > 0 {
-                if entry.events.len() >= entry.event_capacity {
-                    entry.events.pop_front();
-                }
-                entry.events.push_back(event);
-            }
-
             if self.event_capacity > 0 {
                 if self.events.len() >= self.event_capacity {
                     self.events.pop_front();
@@ -593,21 +600,24 @@ impl NyaaState {
             .expect("a sound remains valid while reconciling pause state");
         if sound.wants_playing {
             if sound.locally_paused || group_paused {
-                sound.player.pause();
+                sound.pause();
             } else {
-                sound.player.resume();
+                sound.resume();
             }
         }
         self.collect_sound_events(id);
     }
 
     fn remove_sound(&mut self, id: SoundId) -> Result<(), NyaaError> {
+        if self.required_sounds.contains(&id) {
+            return Err(NyaaError::RequiredSound);
+        }
         let mut sound = self
             .sounds
             .remove(id.index, id.generation)
             .ok_or(NyaaError::InvalidSoundHandle)?;
-        sound.player.cancel_pending_playback();
-        sound.player.stop();
+        sound.cancel_pending_playback();
+        sound.stop();
         Ok(())
     }
 
@@ -617,7 +627,15 @@ impl NyaaState {
             return Err(NyaaError::RootSoundGroup);
         }
 
-        for sound in self.sounds_beneath(id) {
+        let sounds = self.sounds_beneath(id);
+        if sounds
+            .iter()
+            .any(|sound| self.required_sounds.contains(sound))
+        {
+            return Err(NyaaError::RequiredSound);
+        }
+
+        for sound in sounds {
             self.remove_sound(sound)?;
         }
 
@@ -642,17 +660,18 @@ impl NyaaState {
 /// A `Nyaa` owns one output, every [`Sound`], and a recursive hierarchy of [`SoundGroup`] mixer
 /// buses. Sounds and groups are lightweight handles; applications normally need to store only
 /// this root value.
-pub struct Nyaa {
+pub struct Nyaa<K = ()> {
     inner: Arc<Mutex<NyaaState>>,
+    required_sounds: Vec<(K, SoundId)>,
 }
 
-impl Default for Nyaa {
+impl Default for Nyaa<()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Nyaa {
+impl Nyaa<()> {
     /// Creates an empty audio scene using the default output.
     pub fn new() -> Self {
         Self::from_output(Output::new(), None)
@@ -676,9 +695,12 @@ impl Nyaa {
     fn from_output(output: Output, preferred_backend: Option<Backend>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(NyaaState::new(output, preferred_backend))),
+            required_sounds: Vec::new(),
         }
     }
+}
 
+impl<K> Nyaa<K> {
     fn sound_handle(&self, id: SoundId) -> Sound {
         Sound {
             nyaa: Arc::downgrade(&self.inner),
@@ -742,20 +764,8 @@ impl Nyaa {
         }
 
         let group_mixer = state.group(group)?.mixer.clone();
-        let mut player = SoundPlayer::new_with_mixer(state.output.clone(), group_mixer);
-        let source_loaded = load_source(&mut player, &source)?;
-        let (index, generation) = state.sounds.insert(SoundEntry {
-            name,
-            group,
-            source,
-            source_revision: 0,
-            source_loaded,
-            player,
-            wants_playing: false,
-            locally_paused: false,
-            events: VecDeque::new(),
-            event_capacity: usize::MAX,
-        });
+        let sound = SoundNode::new(name, group, source, group_mixer)?;
+        let (index, generation) = state.sounds.insert(sound);
         let id = SoundId { index, generation };
         Ok(Sound {
             nyaa: Arc::downgrade(inner),
@@ -786,7 +796,7 @@ impl Nyaa {
     }
 
     /// Finds a sound by its slash-separated path from the root.
-    pub fn sound(&self, path: &str) -> Option<Sound> {
+    pub fn find_sound(&self, path: &str) -> Option<Sound> {
         let state = self.inner.lock().unwrap();
         let id = state.resolve_sound(state.root, path)?;
         Some(self.sound_handle(id))
@@ -875,7 +885,7 @@ impl Nyaa {
             let result = state
                 .sound_mut(id)
                 .ok()
-                .and_then(|sound| sound.player.poll_pending_playback());
+                .and_then(SoundNode::poll_pending_playback);
             if let Some(result) = result {
                 match result {
                     Ok(()) => {
@@ -888,8 +898,8 @@ impl Nyaa {
                 }
             }
 
-            if let Ok(sound) = state.sound(id) {
-                sound.player.state();
+            if let Ok(sound) = state.sound_mut(id) {
+                sound.state();
             }
             state.collect_sound_events(id);
         }
@@ -1058,6 +1068,133 @@ impl Nyaa {
     }
 }
 
+impl<K: SoundKey> Nyaa<K> {
+    /// Starts building a typed scene using the default output.
+    pub fn builder() -> NyaaBuilder<K> {
+        NyaaBuilder::new()
+    }
+
+    /// Starts building a typed scene connected to an existing output.
+    pub fn builder_with_output(output: Output) -> NyaaBuilder<K> {
+        NyaaBuilder::with_output(output)
+    }
+
+    /// Returns the sound identified by a required key.
+    ///
+    /// Unlike [`Self::find_sound`], this is total because [`NyaaBuilder::build`] validates that
+    /// every key exists and required sounds cannot be removed.
+    pub fn sound(&self, key: K) -> Sound {
+        let id = self
+            .required_sounds
+            .iter()
+            .find_map(|(candidate, id)| (*candidate == key).then_some(*id))
+            .expect("SoundKey::ALL must contain every possible key");
+        self.sound_handle(id)
+    }
+}
+
+impl<K: SoundKey> Default for NyaaBuilder<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: SoundKey> NyaaBuilder<K> {
+    /// Creates a typed scene builder using the default output.
+    pub fn new() -> Self {
+        Self {
+            output: Output::new(),
+            preferred_backend: None,
+            sounds: Vec::new(),
+        }
+    }
+
+    /// Creates a typed scene builder connected to an existing output.
+    pub fn with_output(output: Output) -> Self {
+        let preferred_backend = output.backend();
+        Self {
+            output,
+            preferred_backend,
+            sounds: Vec::new(),
+        }
+    }
+
+    /// Registers the source for one required sound.
+    ///
+    /// Registering the same key again replaces its earlier source.
+    #[must_use]
+    pub fn sound(mut self, key: K, source: impl Into<SoundSource>) -> Self {
+        let source = source.into();
+        if let Some((_, registered)) = self
+            .sounds
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == key)
+        {
+            *registered = source;
+        } else {
+            self.sounds.push((key, source));
+        }
+        self
+    }
+
+    /// Validates the schema and constructs a scene containing every required sound.
+    pub fn build(mut self) -> Result<Nyaa<K>, NyaaError> {
+        let dynamic = Nyaa::from_output(self.output, self.preferred_backend);
+        let mut required_sounds = Vec::with_capacity(K::ALL.len());
+        let mut paths = HashSet::with_capacity(K::ALL.len());
+
+        for &key in K::ALL {
+            let path = key.path();
+            if path.starts_with('/') {
+                return Err(NyaaError::InvalidName);
+            }
+            if !paths.insert(path) {
+                return Err(NyaaError::DuplicateRequiredSoundPath(path));
+            }
+            let Some(index) = self
+                .sounds
+                .iter()
+                .position(|(candidate, _)| *candidate == key)
+            else {
+                return Err(NyaaError::MissingRequiredSound(path));
+            };
+            let (_, source) = self.sounds.swap_remove(index);
+            let (groups, name) = path.rsplit_once('/').unwrap_or(("", path));
+            validate_name(name)?;
+
+            let mut parent = dynamic.root_group();
+            if !groups.is_empty() {
+                for component in groups.split('/') {
+                    validate_name(component)?;
+                    parent = match parent.group(component) {
+                        Some(group) => group,
+                        None => parent.create_group(component)?,
+                    };
+                }
+            }
+
+            let sound = parent.create_sound(name, source)?;
+            required_sounds.push((key, sound.id()));
+        }
+
+        if let Some((key, _)) = self.sounds.first() {
+            return Err(NyaaError::UnknownRequiredSound(key.path()));
+        }
+
+        {
+            let mut state = dynamic.inner.lock().unwrap();
+            state
+                .required_sounds
+                .extend(required_sounds.iter().map(|(_, id)| *id));
+        }
+
+        Ok(Nyaa {
+            inner: dynamic.inner,
+            required_sounds,
+        })
+    }
+}
+
 /// A playable sound owned by a [`Nyaa`] audio scene.
 #[derive(Clone)]
 pub struct Sound {
@@ -1135,12 +1272,10 @@ impl Sound {
         }
 
         let mixer = state.group(group.id)?.mixer.clone();
-        let output = state.output.clone();
         state.sound_mut(self.id)?.group = group.id;
         state
             .sound_mut(self.id)?
-            .player
-            .replace_routing_preserving_playback(output, mixer);
+            .replace_routing_preserving_playback(mixer);
         state.reconcile_sound_pause(self.id);
         Ok(())
     }
@@ -1151,21 +1286,14 @@ impl Sound {
     }
 
     /// Replaces the encoded source without starting playback.
+    ///
+    /// Setting the same underlying resource again is a no-op and preserves the current timeline.
     pub fn set_source(&self, source: impl Into<SoundSource>) -> Result<(), NyaaError> {
         let source = source.into();
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
-        let loaded = load_source(&mut sound.player, &source)?;
-        sound.player.cancel_pending_playback();
-        if !loaded {
-            sound.player.stop();
-        }
-        sound.source = source;
-        sound.source_revision = sound.source_revision.wrapping_add(1);
-        sound.source_loaded = loaded;
-        sound.wants_playing = false;
-        sound.locally_paused = false;
+        sound.replace_source(source)?;
         state.collect_sound_events(self.id);
         Ok(())
     }
@@ -1188,8 +1316,8 @@ impl Sound {
                 if sound.source_revision != revision {
                     return Err(NyaaError::SoundSourceChanged);
                 }
-                sound.player.cancel_pending_playback();
-                sound.player.load_shared_arc_bytes(bytes)?;
+                sound.cancel_pending_playback();
+                sound.load_resolved_bytes(bytes)?;
                 sound.source_loaded = true;
                 sound.wants_playing = false;
                 sound.locally_paused = false;
@@ -1200,7 +1328,7 @@ impl Sound {
 
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
-        sound.source_loaded = load_source(&mut sound.player, &sound.source.clone())?;
+        sound.source_loaded = sound.load_source()?;
         sound.wants_playing = false;
         sound.locally_paused = false;
         state.collect_sound_events(self.id);
@@ -1224,38 +1352,39 @@ impl Sound {
         let group_paused = state.group_is_paused(state.sound(self.id)?.group);
         let sound = state.sound_mut(self.id)?;
 
-        if sound.wants_playing && sound.player.is_playing() && !restart {
+        if sound.wants_playing && sound.is_playing() && !restart {
             return Ok(());
         }
 
         if !sound.source_loaded {
             match &sound.source {
                 SoundSource::Asset(asset) => {
-                    sound.player.start_asset_playback(asset)?;
-                    if !sound.player.is_loading() {
+                    let asset = asset.clone();
+                    sound.start_asset_playback(&asset)?;
+                    if !sound.is_loading() {
                         sound.source_loaded = true;
                     }
                 }
-                source => {
-                    sound.source_loaded = load_source(&mut sound.player, source)?;
+                _ => {
+                    sound.source_loaded = sound.load_source()?;
                 }
             }
         }
 
         if sound.source_loaded {
-            let state = sound.player.state();
+            let state = sound.state();
             let position = if restart || state == PlaybackState::Ended {
                 Duration::ZERO
             } else {
-                sound.player.position()
+                sound.position()
             };
-            sound.player.try_play_at(position)?;
+            sound.try_play_at(position)?;
         }
 
         sound.wants_playing = true;
         sound.locally_paused = false;
-        if group_paused && !sound.player.is_loading() {
-            sound.player.pause();
+        if group_paused && !sound.is_loading() {
+            sound.pause();
         }
         state.collect_sound_events(self.id);
         Ok(())
@@ -1267,7 +1396,7 @@ impl Sound {
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
         sound.locally_paused = true;
-        sound.player.pause();
+        sound.pause();
         state.collect_sound_events(self.id);
         Ok(())
     }
@@ -1280,7 +1409,7 @@ impl Sound {
         let sound = state.sound_mut(self.id)?;
         sound.locally_paused = false;
         if sound.wants_playing && !group_paused {
-            sound.player.resume();
+            sound.resume();
         }
         state.collect_sound_events(self.id);
         Ok(())
@@ -1291,9 +1420,9 @@ impl Sound {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
-        sound.player.cancel_pending_playback();
-        sound.player.stop_preserving_source();
-        sound.player.try_seek(Duration::ZERO)?;
+        sound.cancel_pending_playback();
+        sound.stop();
+        sound.try_seek(Duration::ZERO)?;
         sound.wants_playing = false;
         sound.locally_paused = false;
         state.collect_sound_events(self.id);
@@ -1304,7 +1433,7 @@ impl Sound {
     pub fn try_seek(&self, position: Duration) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state.sound_mut(self.id)?.player.try_seek(position)?;
+        state.sound_mut(self.id)?.try_seek(position)?;
         state.collect_sound_events(self.id);
         Ok(())
     }
@@ -1313,10 +1442,7 @@ impl Sound {
     pub fn try_seek_secs(&self, position_secs: f64) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state
-            .sound_mut(self.id)?
-            .player
-            .try_seek_secs(position_secs)?;
+        state.sound_mut(self.id)?.try_seek_secs(position_secs)?;
         state.collect_sound_events(self.id);
         Ok(())
     }
@@ -1325,7 +1451,7 @@ impl Sound {
     pub fn playback_state(&self) -> Result<PlaybackState, NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        let playback_state = state.sound(self.id)?.player.state();
+        let playback_state = state.sound_mut(self.id)?.state();
         state.collect_sound_events(self.id);
         Ok(playback_state)
     }
@@ -1334,9 +1460,9 @@ impl Sound {
     pub fn poll_event(&self) -> Result<Option<PlaybackEvent>, NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state.sound(self.id)?.player.state();
+        state.sound_mut(self.id)?.state();
         state.collect_sound_events(self.id);
-        Ok(state.sound_mut(self.id)?.events.pop_front())
+        Ok(state.sound_mut(self.id)?.poll_event())
     }
 
     /// Sets the number of events retained by this sound handle's event stream.
@@ -1344,10 +1470,7 @@ impl Sound {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
-        sound.event_capacity = capacity;
-        while sound.events.len() > capacity {
-            sound.events.pop_front();
-        }
+        sound.set_event_capacity(capacity);
         Ok(())
     }
 
@@ -1368,13 +1491,7 @@ impl Sound {
 
     /// Returns the current playback position.
     pub fn position(&self) -> Result<Duration, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .position())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.position())
     }
 
     /// Returns the current playback position formatted as `H:MM:SS` or `M:SS`.
@@ -1384,19 +1501,12 @@ impl Sound {
             .lock()
             .unwrap()
             .sound(self.id)?
-            .player
             .position_formatted())
     }
 
     /// Returns the source duration when known.
     pub fn duration(&self) -> Result<Option<Duration>, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .duration())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.duration())
     }
 
     /// Returns the source duration formatted as `H:MM:SS` or `M:SS`.
@@ -1406,7 +1516,6 @@ impl Sound {
             .lock()
             .unwrap()
             .sound(self.id)?
-            .player
             .duration_formatted())
     }
 
@@ -1417,19 +1526,12 @@ impl Sound {
             .lock()
             .unwrap()
             .sound(self.id)?
-            .player
             .clamped_position())
     }
 
     /// Returns a range suitable for a seek control.
     pub fn seek_range(&self) -> Result<std::ops::RangeInclusive<f64>, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .seek_range())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.seek_range())
     }
 
     /// Sets this sound's volume before group and master multipliers.
@@ -1439,20 +1541,13 @@ impl Sound {
             .lock()
             .unwrap()
             .sound_mut(self.id)?
-            .player
             .set_volume(volume);
         Ok(())
     }
 
     /// Returns this sound's local volume multiplier.
     pub fn volume(&self) -> Result<f32, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .volume())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.volume())
     }
 
     /// Returns this sound's volume after all group and master multipliers.
@@ -1460,7 +1555,7 @@ impl Sound {
         let state = self.state()?;
         let state = state.lock().unwrap();
         let sound = state.sound(self.id)?;
-        Ok(sound.player.volume() * state.group_effective_volume(sound.group)?)
+        Ok(sound.volume() * state.group_effective_volume(sound.group)?)
     }
 
     /// Sets this sound's playback speed.
@@ -1468,14 +1563,14 @@ impl Sound {
         validate_speed(speed)?;
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state.sound_mut(self.id)?.player.try_set_speed(speed)?;
+        state.sound_mut(self.id)?.try_set_speed(speed)?;
         state.collect_sound_events(self.id);
         Ok(())
     }
 
     /// Returns this sound's playback speed.
     pub fn speed(&self) -> Result<f32, NyaaError> {
-        Ok(self.state()?.lock().unwrap().sound(self.id)?.player.speed())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.speed())
     }
 
     /// Enables or disables pitch preservation for this sound.
@@ -1484,7 +1579,6 @@ impl Sound {
         let mut state = state.lock().unwrap();
         state
             .sound_mut(self.id)?
-            .player
             .set_preserve_pitch(preserve_pitch)?;
         state.collect_sound_events(self.id);
         Ok(())
@@ -1497,7 +1591,6 @@ impl Sound {
             .lock()
             .unwrap()
             .sound(self.id)?
-            .player
             .preserves_pitch())
     }
 
@@ -1505,20 +1598,14 @@ impl Sound {
     pub fn set_effects(&self, effects: SoundEffects) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state.sound_mut(self.id)?.player.set_effects(effects)?;
+        state.sound_mut(self.id)?.set_effects(effects)?;
         state.collect_sound_events(self.id);
         Ok(())
     }
 
     /// Returns this sound's pre-mix effect chain.
     pub fn effects(&self) -> Result<SoundEffects, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .effects())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.effects())
     }
 
     /// Enables or disables looping for this sound.
@@ -1527,40 +1614,27 @@ impl Sound {
             .lock()
             .unwrap()
             .sound(self.id)?
-            .player
             .set_looping(looping);
         Ok(())
     }
 
     /// Returns whether this sound loops.
     pub fn is_looping(&self) -> Result<bool, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .is_looping())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.is_looping())
     }
 
     /// Sets this sound's playback and looping range.
     pub fn set_loop_range(&self, range: Range<Duration>) -> Result<(), NyaaError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state.sound_mut(self.id)?.player.set_loop_range(range)?;
+        state.sound_mut(self.id)?.set_loop_range(range)?;
         state.collect_sound_events(self.id);
         Ok(())
     }
 
     /// Returns this sound's playback and looping range.
     pub fn loop_range(&self) -> Result<Option<Range<Duration>>, NyaaError> {
-        Ok(self
-            .state()?
-            .lock()
-            .unwrap()
-            .sound(self.id)?
-            .player
-            .loop_range())
+        Ok(self.state()?.lock().unwrap().sound(self.id)?.loop_range())
     }
 
     /// Removes this sound's playback and looping range.
@@ -1569,7 +1643,6 @@ impl Sound {
             .lock()
             .unwrap()
             .sound_mut(self.id)?
-            .player
             .clear_loop_range();
         Ok(())
     }
@@ -1580,7 +1653,6 @@ impl Sound {
             .lock()
             .unwrap()
             .sound(self.id)?
-            .player
             .wait_until_end();
         Ok(())
     }
@@ -1679,7 +1751,7 @@ impl SoundGroup {
     /// Creates a child mixer group.
     pub fn create_group(&self, name: impl Into<String>) -> Result<SoundGroup, NyaaError> {
         let state = self.state()?;
-        Nyaa::create_group_in(&state, self.id, name)
+        Nyaa::<()>::create_group_in(&state, self.id, name)
     }
 
     /// Creates a sound assigned to this mixer group.
@@ -1689,7 +1761,7 @@ impl SoundGroup {
         source: impl Into<SoundSource>,
     ) -> Result<Sound, NyaaError> {
         let state = self.state()?;
-        Nyaa::create_sound_in(&state, self.id, name, source)
+        Nyaa::<()>::create_sound_in(&state, self.id, name, source)
     }
 
     /// Finds a descendant sound by a path relative to this group.
@@ -1861,9 +1933,9 @@ impl SoundGroup {
         let sounds = state.sounds_beneath(self.id);
         for id in sounds {
             let sound = state.sound_mut(id)?;
-            sound.player.cancel_pending_playback();
-            sound.player.stop_preserving_source();
-            sound.player.try_seek(Duration::ZERO)?;
+            sound.cancel_pending_playback();
+            sound.stop();
+            sound.try_seek(Duration::ZERO)?;
             sound.wants_playing = false;
             sound.locally_paused = false;
             state.collect_sound_events(id);
@@ -1902,6 +1974,78 @@ mod tests {
 
     const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/THE UNFORGIVING.mp3");
 
+    sound_key! {
+        enum TestSound {
+            Preview => "preview",
+            BattleTheme => "music/battle/theme",
+        }
+    }
+
+    #[test]
+    fn typed_scene_requires_every_key_and_returns_required_sounds_directly() {
+        let missing = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+            .sound(
+                TestSound::Preview,
+                SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            )
+            .build();
+        assert!(matches!(
+            missing,
+            Err(NyaaError::MissingRequiredSound("music/battle/theme"))
+        ));
+
+        let nyaa = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+            .sound(
+                TestSound::Preview,
+                SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            )
+            .sound(
+                TestSound::BattleTheme,
+                SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            )
+            .build()
+            .unwrap();
+
+        let theme = nyaa.sound(TestSound::BattleTheme);
+        assert_eq!(theme.path().unwrap(), "music/battle/theme");
+        assert_eq!(
+            nyaa.find_sound("music/battle/theme").unwrap().id(),
+            theme.id()
+        );
+    }
+
+    #[test]
+    fn required_sound_identity_survives_moves_and_cannot_be_removed_recursively() {
+        let nyaa = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+            .sound(
+                TestSound::Preview,
+                SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            )
+            .sound(
+                TestSound::BattleTheme,
+                SoundSource::static_bytes(TEST_AUDIO_BYTES),
+            )
+            .build()
+            .unwrap();
+        let music = nyaa.group("music").unwrap();
+        let menu = nyaa.create_group("menu").unwrap();
+        let theme = nyaa.sound(TestSound::BattleTheme);
+
+        assert!(matches!(
+            music.clone().remove(),
+            Err(NyaaError::RequiredSound)
+        ));
+        assert!(nyaa.group("music/battle").is_some());
+        assert!(matches!(
+            theme.clone().remove(),
+            Err(NyaaError::RequiredSound)
+        ));
+
+        theme.set_group(&menu).unwrap();
+        assert_eq!(nyaa.sound(TestSound::BattleTheme).id(), theme.id());
+        assert_eq!(theme.path().unwrap(), "menu/theme");
+    }
+
     #[test]
     fn recursive_paths_find_sounds_and_groups() {
         let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
@@ -1915,7 +2059,10 @@ mod tests {
         assert_eq!(combat.path().unwrap(), "music/combat");
         assert_eq!(theme.path().unwrap(), "music/combat/theme");
         assert_eq!(nyaa.group("music/combat").unwrap().id(), combat.id());
-        assert_eq!(nyaa.sound("music/combat/theme").unwrap().id(), theme.id());
+        assert_eq!(
+            nyaa.find_sound("music/combat/theme").unwrap().id(),
+            theme.id()
+        );
         assert_eq!(music.sound("combat/theme").unwrap().id(), theme.id());
     }
 
@@ -1967,7 +2114,7 @@ mod tests {
 
         theme.set_group(&menu).unwrap();
         assert_eq!(theme.path().unwrap(), "menu/theme");
-        assert_eq!(nyaa.sound("menu/theme").unwrap().id(), theme.id());
+        assert_eq!(nyaa.find_sound("menu/theme").unwrap().id(), theme.id());
         assert!(matches!(
             music.set_parent(&combat),
             Err(NyaaError::SoundGroupCycle)
@@ -2023,6 +2170,67 @@ mod tests {
             music.set_volume(f32::NAN),
             Err(NyaaError::InvalidVolume)
         ));
+    }
+
+    #[test]
+    fn invalid_source_replacement_keeps_the_previous_source() {
+        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
+        let sound = nyaa
+            .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        let duration = sound.duration().unwrap();
+
+        assert!(sound.set_source(vec![0_u8; 16]).is_err());
+        assert_eq!(sound.duration().unwrap(), duration);
+        assert!(matches!(
+            sound.source().unwrap(),
+            SoundSource::StaticBytes(bytes) if std::ptr::eq(bytes, TEST_AUDIO_BYTES)
+        ));
+    }
+
+    #[test]
+    fn assigning_the_same_source_preserves_the_timeline() {
+        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
+        let sound = nyaa
+            .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        let position = Duration::from_secs(42);
+
+        sound.try_seek(position).unwrap();
+        sound
+            .set_source(SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+
+        assert_eq!(sound.position().unwrap(), position);
+    }
+
+    #[test]
+    fn seeking_after_completion_sets_the_next_play_position() {
+        let nyaa = Nyaa::new();
+        if !nyaa.has_output() {
+            eprintln!("Skipping playback assertions: no audio output is available");
+            return;
+        }
+        let sound = nyaa
+            .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        let range = Duration::from_secs(42)..Duration::from_millis(42_250);
+        let sought = Duration::from_millis(42_100);
+
+        sound.set_loop_range(range.clone()).unwrap();
+        sound.play().unwrap();
+        sound.wait_until_end().unwrap();
+        assert_eq!(sound.playback_state().unwrap(), PlaybackState::Ended);
+
+        sound.try_seek(sought).unwrap();
+        assert_eq!(sound.playback_state().unwrap(), PlaybackState::Idle);
+        sound.play().unwrap();
+
+        let resumed = sound.position().unwrap();
+        assert!(
+            resumed >= sought && resumed < range.end,
+            "playback resumed at {resumed:?} instead of the explicitly sought position {sought:?}"
+        );
     }
 
     #[test]
