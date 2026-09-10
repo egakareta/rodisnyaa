@@ -1,11 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
-use std::fs::File;
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::{num::NonZeroUsize, ops::Range, sync::Arc, time::Duration};
 
-#[cfg(not(target_arch = "wasm32"))]
-use rodio::Decoder;
 use rodio::Source;
 
 use crate::{NyaaError, SoundAsset, decoder};
@@ -198,18 +194,14 @@ impl Waveform {
     /// Prefer [`Self::builder_from_file`] for long tracks to avoid blocking.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, NyaaError> {
-        use crate::NyaaError;
-
-        let file = File::open(path).map_err(NyaaError::File)?;
-        let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
+        let source = decoder::from_file(path)?;
         Ok(Self::from_source(source))
     }
 
     /// Starts decoding a file into a waveform incrementally.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn builder_from_file(path: impl AsRef<Path>) -> Result<WaveformBuilder, NyaaError> {
-        let file = File::open(path).map_err(NyaaError::File)?;
-        let source = Decoder::try_from(file).map_err(NyaaError::Decode)?;
+        let source = decoder::from_file(path)?;
         Ok(Self::builder_from_source(source))
     }
 
