@@ -10,7 +10,7 @@ log = "0.4"
 web-time = "1"
 
 [features]
-default = ["asio", "nightly", "jack"]
+default = ["nightly", "jack"]
 asio = ["rodisnyaa/asio"]
 nightly = ["rodisnyaa/nightly"]
 jack = ["rodisnyaa/jack"]
