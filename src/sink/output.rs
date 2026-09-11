@@ -3,8 +3,10 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use cpal::traits::HostTrait;
-use rodio::{DeviceSinkBuilder, DeviceTrait, MixerDeviceSink, Player};
+use rodio::{
+    DeviceSinkBuilder, DeviceSinkError, DeviceTrait, MixerDeviceSink, Player,
+    cpal::{BufferSize, traits::HostTrait},
+};
 
 use crate::{Backend, Device, OutputError};
 
@@ -388,15 +390,21 @@ impl Output {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn open_default_sink() -> Option<MixerDeviceSink> {
-        use rodio::DeviceSinkBuilder;
-
-        match DeviceSinkBuilder::open_default_sink() {
+        let device = cpal::default_host().default_output_device()?;
+        match Self::sink_builder(device).and_then(|builder| builder.open_sink_or_fallback()) {
             Ok(mut sink) => {
                 sink.log_on_drop(false);
                 Some(sink)
             }
             Err(_) => None,
         }
+    }
+
+    /// use this over [`DeviceSinkBuilder::from_device()`]
+    fn sink_builder(device: cpal::Device) -> Result<DeviceSinkBuilder, DeviceSinkError> {
+        // Rodio's DeviceSinkBuilder::open_default_sink() fixed 50 ms period can leave
+        // plugin streams waiting forever to start.
+        Ok(DeviceSinkBuilder::from_device(device)?.with_buffer_size(BufferSize::Default))
     }
 
     fn open_backend_sink(backend: Backend) -> Result<MixerDeviceSink, OutputError> {
@@ -406,7 +414,7 @@ impl Output {
             .default_output_device()
             .or_else(|| host.output_devices().ok()?.next())
             .ok_or(OutputError::NoOutputDevice(backend))?;
-        let mut sink = DeviceSinkBuilder::from_device(device)
+        let mut sink = Self::sink_builder(device)
             .and_then(|builder| builder.open_sink_or_fallback())
             .map_err(|source| OutputError::OpenStream { backend, source })?;
 
@@ -448,7 +456,7 @@ impl Output {
 
     fn open_device_sink(device: &Device) -> Result<MixerDeviceSink, OutputError> {
         let backend_device = Self::find_backend_device(device)?;
-        let mut sink = DeviceSinkBuilder::from_device(backend_device)
+        let mut sink = Self::sink_builder(backend_device)
             .and_then(|builder| builder.open_sink_or_fallback())
             .map_err(|source| OutputError::OpenDeviceStream {
                 device: Box::new(device.clone()),
