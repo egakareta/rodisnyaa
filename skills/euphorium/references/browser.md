@@ -1,0 +1,67 @@
+# Browser and WASM Integration
+
+## Dependency
+
+The ordinary WebAudio path works on stable Rust. Enable `nightly` only for CPAL's AudioWorklet
+path, which also requires `rust-src`, a shared-memory WASM build, and cross-origin isolation.
+
+## Assets And First Playback
+
+```rust
+use euphorium::{SoundAsset, Soundscape, SoundscapeError, SoundSource};
+
+fn create_audio() -> Result<Soundscape, SoundscapeError> {
+    let soundscape = Soundscape::new();
+    soundscape.create_sound(
+        "music",
+        SoundSource::asset(SoundAsset::new(
+            "assets/music.mp3",
+            "/assets/music.mp3",
+        )),
+    )?;
+    Ok(soundscape)
+}
+
+fn on_user_gesture(soundscape: &Soundscape) -> Result<(), SoundscapeError> {
+    soundscape.find_sound("music").expect("music exists").play()
+}
+```
+
+Call `Sound::play()` synchronously from the click, pointer, or keyboard callback. It opens deferred
+WebAudio while transient user activation is available, then starts the browser fetch. Do not await
+`Sound::load()` before first playback unless the output was already opened from a user gesture.
+
+On WASM, the complete response is retained in memory for decoding. Ensure the URL is served, CORS
+allows the application origin, the decoder feature matches the file, and large assets fit the
+browser memory budget. `SoundAsset` clones share a browser-byte cache.
+
+## Update Loop
+
+```rust
+fn update_audio(soundscape: &Soundscape) {
+    for failure in soundscape.update() {
+        log::error!("sound {:?} failed: {}", failure.sound, failure.error);
+    }
+}
+```
+
+`Soundscape::update()` completes all pending loads and records playback events centrally. Request another
+UI update while any relevant sound reports `is_loading() == Ok(true)`.
+
+## AudioWorklet Setup
+
+For the `nightly` feature, configure a nightly toolchain with `rust-src`, WASM atomics/shared memory,
+and production-equivalent memory limits. Serve at least these headers:
+
+```text
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-site
+```
+
+All subresources must satisfy cross-origin isolation. The exact linker flags and memory size depend
+on the consumer's deployment; use the repository example application's `.cargo/config.toml` as the
+tested baseline.
+
+Verify first playback from a real gesture, loading and error states, replay from cache, seek,
+completion, failed HTTP responses, and CORS failures.

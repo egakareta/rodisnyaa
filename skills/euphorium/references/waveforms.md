@@ -20,20 +20,20 @@ Available constructor families are:
 - Native-only `from_file` and `builder_from_file`.
 - Async cross-platform `from_asset` and `builder_from_asset`.
 
-The runtime-byte constructors copy `bytes.as_ref()` in rodisnyaa. Asset waveform methods
-reuse the browser cache shared by clones of the same `AudioAsset`.
+The runtime-byte constructors copy `bytes.as_ref()` in Euphorium. Asset waveform methods
+reuse the browser cache shared by clones of the same `SoundAsset`.
 
 ## Incremental Update Pattern
 
 ```rust
-use rodisnyaa::{NyaaError, WaveformBuilder};
+use euphorium::{SoundscapeError, WaveformBuilder};
 use std::ops::Range;
 use std::time::Duration;
 
 fn update_waveform(
     builder: &mut WaveformBuilder,
     visible_range: Range<Duration>,
-) -> Result<bool, NyaaError> {
+) -> Result<bool, SoundscapeError> {
     builder.prioritize(visible_range)?;
     Ok(builder.advance_frames(builder.sample_rate() as usize))
 }
@@ -45,7 +45,7 @@ per channel.
 
 `prioritize(range)` selects missing peaks in the visible range before returning to background
 decoding. Out-of-order prioritization requires a source with known duration and working
-`Source::try_seek`. Unknown-duration sources continue sequentially. Surface `NyaaError::Seek`
+`Source::try_seek`. Unknown-duration sources continue sequentially. Surface `SoundscapeError::Seek`
 instead of repeatedly retrying an unseekable source.
 
 `advance_frames()` returns `true` only when the complete source has been decoded. Use
@@ -99,5 +99,5 @@ The finest default resolution is `Waveform::DEFAULT_FRAMES_PER_PEAK`, currently 
 - Verify the UI remains responsive while a long track decodes.
 - Exercise zoomed and scrolled ranges, including track start and end.
 - Handle `max_peaks == 0`, empty ranges, unknown duration, unavailable peaks, and seek errors.
-- Confirm waveform timestamps align with `Nyaa::position()` after speed changes; waveform ranges
+- Confirm waveform timestamps align with `Sound::position()` after speed changes; waveform ranges
   remain in source time.
