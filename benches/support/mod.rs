@@ -286,7 +286,7 @@ pub fn bench_volume(criterion: &mut Criterion) {
                         .sound
                         .set_volume(black_box(if quiet { 0.25 } else { 1.0 }))
                         .unwrap();
-                    black_box(prepared.sound.volume().unwrap())
+                    black_box(prepared.sound.local_volume().unwrap())
                 });
             });
         }
