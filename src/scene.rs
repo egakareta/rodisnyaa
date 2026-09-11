@@ -358,6 +358,14 @@ impl SoundscapeState {
     fn replace_output(&mut self, output: Output, preferred_backend: Option<Backend>) {
         self.output = output;
         self.preferred_backend = preferred_backend;
+        // New outputs on wasm start deferred (no sink) so the first playback can
+        // happen in response to a user gesture. When switching backends/devices
+        // while sounds are playing, leaving the new output unopened disconnects
+        // the graph: sounds still report Playing but no audio flows and position
+        // freezes until the next play(). The switch itself originates from a user
+        // gesture, so try to open immediately to preserve playback. On failure
+        // the root stays pending and is retried on the next play().
+        let _ = self.output.retry_sink();
         self.rebuild_audio_graph();
     }
 

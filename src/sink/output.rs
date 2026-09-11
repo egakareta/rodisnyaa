@@ -324,7 +324,9 @@ impl Output {
             return Ok(());
         }
 
-        *self = Self::try_new_with_backend(backend)?;
+        let new = Self::try_new_with_backend(backend)?;
+        let _ = new.retry_sink(); // try_new_with_backend defers opening the sink on wasm
+        *self = new;
         Ok(())
     }
 
@@ -339,7 +341,9 @@ impl Output {
             return Ok(());
         }
 
-        *self = Self::try_new_with_device(device)?;
+        let new = Self::try_new_with_device(device)?;
+        let _ = new.retry_sink(); // try_new_with_backend defers opening the sink on wasm
+        *self = new;
         Ok(())
     }
 
