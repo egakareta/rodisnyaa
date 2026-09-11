@@ -1,8 +1,10 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Mutex;
 use std::{
     collections::{HashSet, VecDeque},
     fmt,
     ops::Range,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Weak},
     time::Duration,
 };
 
@@ -10,6 +12,8 @@ use rodio::{
     Player, Source,
     mixer::{Mixer, MixerSource, mixer},
 };
+#[cfg(target_arch = "wasm32")]
+use wasm_sync::Mutex;
 
 use crate::{
     Backend, Device, Output, OutputError, PlaybackEvent, PlaybackState, SoundEffects, SoundSource,

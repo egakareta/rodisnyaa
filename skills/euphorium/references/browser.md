@@ -56,6 +56,10 @@ may play, pause, seek, and retune sounds while the main thread pumps `update()`.
 `Soundscape` root, `update()`, `ensure_output()`, and backend/device switches on the creating
 thread: the root owns the thread-affine `AudioContext`.
 
+Euphorium's AudioWorklet setup is compatible with wasm-bindgen-rayon's generated worker helper.
+Use wasm-bindgen-rayon's normal initialization; no generated-JavaScript patch or Trunk post-build
+hook is required.
+
 ## AudioWorklet Setup
 
 For the `nightly` feature, configure a nightly toolchain with `rust-src`, WASM atomics/shared memory,
