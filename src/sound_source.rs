@@ -214,6 +214,14 @@ impl SoundSource {
             }
         }
     }
+
+    /// Returns `true` if this is [`SoundSource::Empty`].
+    ///
+    /// Typically happens when a [`crate::Sound`] is created with a placeholder source,
+    /// and the actual audio resource has not been assigned yet.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
 }
 
 impl From<&'static [u8]> for SoundSource {
