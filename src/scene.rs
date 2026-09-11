@@ -1089,7 +1089,10 @@ impl<K> Soundscape<K> {
 }
 
 impl<K: SoundKey> Soundscape<K> {
-    /// Starts building a typed scene using the default output.
+    /// Starts building a typed scene using the default deferred output.
+    ///
+    /// Call [`Soundscape::update`] or [`Soundscape::ensure_output`] to
+    /// actually open the output, typically when playback needs it.
     pub fn builder() -> SoundscapeBuilder<K> {
         SoundscapeBuilder::default()
     }
@@ -1097,6 +1100,11 @@ impl<K: SoundKey> Soundscape<K> {
     /// Starts building a typed scene connected to an existing output.
     pub fn builder_with_output(output: Output) -> SoundscapeBuilder<K> {
         SoundscapeBuilder::new(output)
+    }
+
+    /// Starts building a typed scene using a non-deferred output.
+    pub fn builder_eager() -> SoundscapeBuilder<K> {
+        Self::builder_with_output(Output::new())
     }
 
     /// Returns the sound identified by a required key.
