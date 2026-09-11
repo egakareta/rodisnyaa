@@ -1,10 +1,11 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use eframe::egui;
 use euphorium::{
     Sound, SoundAsset, SoundSource, Soundscape, format_timestamp_secs, parse_timestamp,
 };
 use rayon::prelude::*;
+use web_time::{Duration, Instant};
 
 /// Compile-time proof that euphorium handles can move across rayon threads,
 /// including browser worker threads on WASM.
@@ -32,9 +33,18 @@ euphorium::sound_key! {
 }
 
 #[derive(Default)]
+struct PositionPollState {
+    pending: bool,
+    result: Option<String>,
+}
+
+#[derive(Default)]
 struct App {
     soundscape: Soundscape<AppSound>,
     rayon_result: String,
+    passive_position_result: String,
+    position_poll: Arc<Mutex<PositionPollState>>,
+    last_position_poll: Option<Instant>,
 }
 
 impl App {
@@ -49,6 +59,57 @@ impl App {
     /// Get the [`Sound`] for the music track.
     pub fn music(&self) -> Sound {
         self.soundscape.sound(AppSound::Music)
+    }
+
+    fn request_positions_from_workers(&self, sound: Sound) {
+        let position_poll = Arc::clone(&self.position_poll);
+
+        rayon::spawn(move || {
+            let threads = rayon::current_num_threads().max(1);
+            let request_count = threads * 4;
+            let positions: Vec<f64> = (0..request_count)
+                .into_par_iter()
+                .map(|_| {
+                    sound
+                        .clamped_position()
+                        .map(|position| position.as_secs_f64())
+                        .unwrap_or(f64::NAN)
+                })
+                .collect();
+
+            let position_secs = positions.first().copied().unwrap_or(f64::NAN);
+            let result = format!(
+                "{request_count} requests from {threads} Rayon workers, position={position_secs:.2}s"
+            );
+
+            let mut position_poll = position_poll.lock().unwrap();
+            position_poll.result = Some(result);
+            position_poll.pending = false;
+        });
+    }
+
+    fn update_passive_position_poll(&mut self, sound: Sound) {
+        if let Some(result) = self.position_poll.lock().unwrap().result.take() {
+            self.passive_position_result = result;
+        }
+
+        let due = self
+            .last_position_poll
+            .map_or(true, |last| last.elapsed() >= Duration::from_secs(1));
+        if !due {
+            return;
+        }
+
+        let mut position_poll = self.position_poll.lock().unwrap();
+        if position_poll.pending {
+            return;
+        }
+
+        position_poll.pending = true;
+        self.last_position_poll = Some(Instant::now());
+        drop(position_poll);
+
+        self.request_positions_from_workers(sound);
     }
 }
 
@@ -122,6 +183,8 @@ impl eframe::App for App {
                 failure.error
             );
         }
+
+        self.update_passive_position_poll(sound.clone());
 
         // update timeline
         ui.ctx().request_repaint();
@@ -327,19 +390,13 @@ impl eframe::App for App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.heading("Rayon threading test");
                 ui.label(format!("Threads: {}", rayon::current_num_threads()));
-                ui.label(
-                    "Press Play, then run the test: audio should keep \
-                     playing while workers drive this Sound in parallel.",
-                )
-                .on_hover_text(
-                    "Sound handles are Send + Sync on every target; the mixer \
-                     runs on its own audio thread and the scene output stays \
-                     on the creating thread.",
-                );
 
-                if ui.button("Run rayon + euphorium test").clicked() {
+                if !self.passive_position_result.is_empty() {
+                    ui.label(&self.passive_position_result);
+                }
+
+                if ui.button("Run rayon + CPU stress test").clicked() {
                     self.rayon_result = run_rayon_euphorium_test(sound.clone());
                     log::info!("rayon test: {}", self.rayon_result);
                 }
