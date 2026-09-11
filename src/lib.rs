@@ -11,7 +11,7 @@ pub mod patch;
 mod range;
 mod scene;
 mod sink;
-mod sound;
+pub mod sound;
 mod sound_source;
 mod timestamp;
 mod waveform;

@@ -1,3 +1,5 @@
+//! Individual sound playback and control.
+
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,7 +54,7 @@ pub enum PlaybackEvent {
 }
 
 /// The complete mutable state of one sound in an audio scene.
-pub(crate) struct SoundNode {
+pub struct SoundNode {
     pub(crate) name: String,
     pub(crate) group: SoundGroupId,
     pub(crate) source: SoundSource,
@@ -167,7 +169,7 @@ impl SoundNode {
         self.mixer = mixer;
 
         if (was_playing || was_paused) && has_source {
-            if self.try_seek_with_decode(position).is_err() {
+            if self.try_seek(position).is_err() {
                 self.voice = self.connect_voice();
                 self.voice.set_volume(self.volume());
                 self.voice.set_speed(self.player_speed());
@@ -428,22 +430,6 @@ impl SoundNode {
         if self.preserve_pitch { 1.0 } else { self.speed }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn player_position_for_source_position(&self, position: Duration) -> Duration {
-        // `Player` applies `speed` through its internal `Speed` filter (or through
-        // `Wsola` when pitch is preserved). In both cases player time runs at
-        // `source_time / speed`, and `Speed::try_seek`/`Wsola::try_seek` multiply
-        // the requested player position by `speed` to obtain the source position.
-        // Passing the source position directly therefore overshoots by `speed`,
-        // which seeks past the end (and immediately ends playback) when
-        // `speed > 1` and the target is near the end.
-        if self.speed.is_finite() && self.speed > 0.0 {
-            position.div_f32(self.speed)
-        } else {
-            position
-        }
-    }
-
     fn reset_loaded_source(&mut self, duration: Option<Duration>) {
         self.voice.stop();
 
@@ -614,42 +600,6 @@ impl SoundNode {
         self.state() == PlaybackState::Loading
     }
 
-    /// Attempts to seek to a given position in the current source.
-    ///
-    /// This blocks between 0 and ~5 milliseconds.
-    ///
-    /// As long as the duration of the source is known, seek is guaranteed to saturate
-    /// at the end of the source. For example given a source that reports a total duration
-    /// of 42 seconds calling `try_seek()` with 60 seconds as argument will seek to
-    /// 42 seconds.
-    ///
-    /// If there is no current source, this updates the reported position without starting
-    /// playback.
-    pub fn try_seek(&mut self, position: Duration) -> Result<(), SoundscapeError> {
-        if self.set_position_if_empty(position) {
-            return Ok(());
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let player_position = self.player_position_for_source_position(position);
-            self.voice
-                .try_seek(player_position)
-                .map_err(SoundscapeError::Seek)
-                .map_err(|error| self.record_failure(error))?;
-            self.position_offset = position;
-            self.player_position_anchor = player_position;
-            self.position_is_held = false;
-
-            Ok(())
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.try_seek_with_decode(position)
-        }
-    }
-
     /// Convenience version of [`Self::try_seek`] that accepts the position in seconds.
     pub fn try_seek_secs(&mut self, position_secs: f64) -> Result<(), SoundscapeError> {
         if position_secs.is_nan() || position_secs.is_infinite() || position_secs < 0.0 {
@@ -659,12 +609,45 @@ impl SoundNode {
         self.try_seek(Duration::from_secs_f64(position_secs))
     }
 
-    /// Functionally equivalent to `try_seek`, but avoids the deadlock that occurs when calling
-    /// [`Player::try_seek`] on the same thread as the audio callback.
+    /// Attempts to seek to a given position in the current source.
     ///
-    /// You *can* use this on non-wasm targets, but it will be slower than calling `try_seek`
-    /// directly.
-    pub fn try_seek_with_decode(&mut self, position: Duration) -> Result<(), SoundscapeError> {
+    /// This blocks between 0 and ~5 milliseconds.
+    ///
+    /// As long as the duration of the source is known, seek is guaranteed to saturate
+    /// at the end of the source. For example given a source that reports a total duration
+    /// of 42 seconds calling `try_seek()` with 60 seconds as argument will seek to
+    /// 42 seconds.
+    pub fn try_seek_without_decoding(&mut self, position: Duration) -> Result<(), SoundscapeError> {
+        if self.set_position_if_empty(position) {
+            return Ok(());
+        }
+
+        // `Player` applies `speed` through its internal `Speed` filter (or through
+        // `Wsola` when pitch is preserved). In both cases player time runs at
+        // `source_time / speed`, and `Speed::try_seek`/`Wsola::try_seek` multiply
+        // the requested player position by `speed` to obtain the source position.
+        // Passing the source position directly therefore overshoots by `speed`,
+        // which seeks past the end (and immediately ends playback) when
+        // `speed > 1` and the target is near the end.
+        let player_position = if self.speed.is_finite() && self.speed > 0.0 {
+            position.div_f32(self.speed)
+        } else {
+            position
+        };
+        self.voice
+            .try_seek(player_position)
+            .map_err(SoundscapeError::Seek)
+            .map_err(|error| self.record_failure(error))?;
+        self.position_offset = position;
+        self.player_position_anchor = player_position;
+        self.position_is_held = false;
+
+        Ok(())
+    }
+
+    /// Functionally equivalent to `try_seek_without_decoding`, but avoids the deadlock that occurs
+    /// when calling [`Player::try_seek`] on the same thread as the audio callback.
+    pub fn try_seek(&mut self, position: Duration) -> Result<(), SoundscapeError> {
         if self.set_position_if_empty(position) {
             return Ok(());
         }
@@ -819,7 +802,7 @@ impl SoundNode {
 
         let position = self.position();
         let previous_effects = std::mem::replace(&mut self.effects, effects);
-        let result = self.try_seek_with_decode(position);
+        let result = self.try_seek(position);
 
         if result.is_err() {
             self.effects = previous_effects;
@@ -1005,7 +988,7 @@ impl SoundNode {
         if self.preserve_pitch && self.speed != speed && !self.is_empty() {
             let position = self.position();
             let previous_speed = std::mem::replace(&mut self.speed, speed);
-            let result = self.try_seek_with_decode(position);
+            let result = self.try_seek(position);
 
             if result.is_err() {
                 self.speed = previous_speed;
@@ -1051,7 +1034,7 @@ impl SoundNode {
 
         let position = self.position();
         self.preserve_pitch = preserve_pitch;
-        let result = self.try_seek_with_decode(position);
+        let result = self.try_seek(position);
 
         if result.is_err() {
             self.preserve_pitch = !preserve_pitch;
@@ -1091,7 +1074,7 @@ impl SoundNode {
         let previous_range = self.loop_range.replace(range);
 
         if matches!(state, PlaybackState::Playing | PlaybackState::Paused)
-            && let Err(error) = self.try_seek_with_decode(position)
+            && let Err(error) = self.try_seek(position)
         {
             self.loop_range = previous_range;
             return Err(error);

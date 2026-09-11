@@ -2359,6 +2359,57 @@ mod tests {
     }
 
     #[test]
+    fn backward_seeks_keep_playback_advancing() {
+        let soundscape = Soundscape::new();
+        if !soundscape.has_output() {
+            eprintln!("Skipping playback assertions: no audio output is available");
+            return;
+        }
+        let sound = soundscape
+            .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        let duration = sound
+            .duration()
+            .unwrap()
+            .expect("test audio has a duration");
+
+        sound.play().unwrap();
+        assert!(sound.is_playing().unwrap());
+
+        // Jump far forward, then far backwards: seeks must resolve on the calling
+        // thread so slow decoder seeks can neither stall the audio callback nor
+        // block the scene while waiting for it.
+        let forward = (duration - Duration::from_secs(1)).max(Duration::from_secs(60));
+        sound.try_seek(forward).unwrap();
+        assert!(sound.is_playing().unwrap());
+        let landed = sound.position().unwrap();
+        assert!(
+            landed >= forward && landed <= duration,
+            "forward seek landed at {landed:?} instead of {forward:?}"
+        );
+
+        let backward = Duration::from_secs(1).min(forward);
+        sound.try_seek(backward).unwrap();
+        assert!(sound.is_playing().unwrap());
+        let rewound = sound.position().unwrap();
+        assert!(
+            rewound >= backward && rewound < backward + Duration::from_secs(5),
+            "backward seek landed at {rewound:?} instead of {backward:?}"
+        );
+
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(sound.is_playing().unwrap());
+        assert!(
+            sound.position().unwrap() > rewound,
+            "playback position is frozen after seeking backwards"
+        );
+
+        sound.stop().unwrap();
+        sound.play().unwrap();
+        assert!(sound.is_playing().unwrap());
+    }
+
+    #[test]
     fn sound_transport_and_group_pause_gates_preserve_local_intent() {
         let soundscape = Soundscape::new();
         if !soundscape.has_output() {
