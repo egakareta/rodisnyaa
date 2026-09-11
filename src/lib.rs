@@ -15,6 +15,7 @@ pub mod sound;
 mod sound_source;
 mod timestamp;
 mod waveform;
+mod waveform_view;
 pub mod wsola;
 
 pub use effect::*;
@@ -27,6 +28,7 @@ pub use sound::{PlaybackEvent, PlaybackState};
 pub use sound_source::*;
 pub use timestamp::*;
 pub use waveform::*;
+pub use waveform_view::*;
 
 /// A CPAL audio host that can provide an output device.
 pub type Backend = rodio::cpal::HostId;

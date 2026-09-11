@@ -9,8 +9,8 @@ use std::{
 use eframe::egui;
 use euphorium::{
     AutomaticGainEffect, DistortionEffect, FilterEffect, LimiterEffect, Output, ReverbEffect,
-    Sound, SoundAsset, SoundEffects, SoundSource, Soundscape, Waveform, WaveformBuilder,
-    format_timestamp_secs, parse_timestamp,
+    Sound, SoundAsset, SoundEffects, SoundSource, Soundscape, WaveformView, format_timestamp_secs,
+    parse_timestamp,
 };
 use web_time::Duration;
 
@@ -124,43 +124,9 @@ euphorium::sound_key! {
     }
 }
 
-struct WaveformWindow {
-    visible_secs: f64,
-    view_start_secs: f64,
-    resume_after_scrub: bool,
-}
-
-impl Default for WaveformWindow {
-    fn default() -> Self {
-        Self {
-            visible_secs: 20.0,
-            view_start_secs: 0.0,
-            resume_after_scrub: false,
-        }
-    }
-}
-
-impl WaveformWindow {
-    fn visible_range(&mut self, duration_secs: f64, playhead_secs: f64) -> std::ops::Range<f64> {
-        if duration_secs <= 0.0 {
-            return 0.0..0.0;
-        }
-
-        let minimum_visible_secs = duration_secs.min(0.25);
-        self.visible_secs = self.visible_secs.clamp(minimum_visible_secs, duration_secs);
-        let visible_secs = self.visible_secs;
-        let max_start = (duration_secs - visible_secs).max(0.0);
-
-        self.view_start_secs = (playhead_secs - visible_secs * 0.5).clamp(0.0, max_start);
-
-        self.view_start_secs..self.view_start_secs + visible_secs
-    }
-}
-
 struct App {
     soundscape: Soundscape<AppSound>,
-    waveform: Option<WaveformBuilder>,
-    waveform_window: WaveformWindow,
+    waveform: WaveformView,
     music_mode: MusicMode,
     selected_song: usize,
 }
@@ -173,8 +139,7 @@ impl App {
 
         let mut app = App {
             soundscape,
-            waveform: None,
-            waveform_window: WaveformWindow::default(),
+            waveform: WaveformView::new(),
             music_mode: MusicMode::StaticBytes,
             selected_song: DEFAULT_SONG_INDEX,
         };
@@ -204,15 +169,14 @@ impl App {
             log::error!("could not stop audio: {error}");
         }
         self.selected_song = selected_song;
-        self.waveform_window = WaveformWindow::default();
 
         if let Err(error) = self.music().set_source(self.selected_source()) {
             log::error!("could not load audio duration: {error}");
         }
 
-        self.waveform = Waveform::builder_from_static_bytes(song.bytes)
-            .inspect_err(|error| log::error!("could not start waveform decoding: {error}"))
-            .ok();
+        if let Err(error) = self.waveform.set_static_bytes(song.bytes) {
+            log::error!("could not start waveform decoding: {error}");
+        }
     }
 
     /// Replaces the current [`SoundSource`] for the music track with a new one based on the current [`MusicMode`].
@@ -467,15 +431,12 @@ impl App {
 
     fn show_waveform(&mut self, ui: &mut egui::Ui) {
         let sound = self.music();
-        let Some(waveform) = self.waveform.as_mut() else {
+        if !self.waveform.is_available() {
             ui.label("Waveform unavailable");
             return;
-        };
-        let duration_secs = waveform
-            .duration()
-            .unwrap_or_else(|| waveform.decoded_duration())
-            .as_secs_f64();
-        let minimum_visible_secs = duration_secs.min(0.25);
+        }
+        let duration_secs = self.waveform.duration_secs();
+        let minimum_visible_secs = self.waveform.minimum_visible_secs();
 
         let playhead_secs = sound.position().unwrap_or_default().as_secs_f64();
         let desired_size = egui::vec2(ui.available_width().min(760.0), 156.0);
@@ -485,12 +446,12 @@ impl App {
             ui.add_space(offset);
 
             if ui.button("-").on_hover_text("Zoom out").clicked() {
-                self.waveform_window.visible_secs *= 2.0;
+                self.waveform.zoom_out();
             }
 
             ui.add(
                 egui::Slider::new(
-                    &mut self.waveform_window.visible_secs,
+                    self.waveform.visible_secs_mut(),
                     minimum_visible_secs..=duration_secs,
                 )
                 .suffix("s")
@@ -498,7 +459,7 @@ impl App {
             );
 
             if ui.button("+").on_hover_text("Zoom in").clicked() {
-                self.waveform_window.visible_secs /= 2.0;
+                self.waveform.zoom_in();
             }
         });
 
@@ -517,32 +478,28 @@ impl App {
                 (scroll_delta * 0.01).exp()
             };
 
-            self.waveform_window.visible_secs = (self.waveform_window.visible_secs / zoom_delta)
-                .clamp(minimum_visible_secs, duration_secs);
+            self.waveform.zoom_by(zoom_delta);
         }
 
-        let visible_range = self
-            .waveform_window
-            .visible_range(duration_secs, playhead_secs);
-        let visible_duration = visible_range.end - visible_range.start;
-
-        let waveform_range = Duration::from_secs_f64(visible_range.start)
-            ..Duration::from_secs_f64(visible_range.end);
-
-        match waveform.prioritize(waveform_range.clone()) {
-            Ok(()) if !waveform.is_finished() => {
-                waveform.advance_frames(waveform.sample_rate() as usize);
-                ui.ctx().request_repaint();
+        let visible_range = match self.waveform.poll_visible(playhead_secs) {
+            Ok(poll) => {
+                if !poll.finished {
+                    ui.ctx().request_repaint();
+                }
+                poll.visible
             }
-            Ok(()) => {}
-            Err(error) => log::error!("could not prioritize waveform decoding: {error}"),
-        }
+            Err(error) => {
+                log::error!("could not prioritize waveform decoding: {error}");
+                self.waveform.visible_range(playhead_secs)
+            }
+        };
+        let visible_duration = visible_range.end - visible_range.start;
 
         if (response.clicked() || response.dragged())
             && let Some(pointer) = response.interact_pointer_pos()
         {
             let pointer_fraction = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            let seek_secs = visible_range.start + visible_duration * f64::from(pointer_fraction);
+            let seek_secs = WaveformView::seek_secs(&visible_range, f64::from(pointer_fraction));
 
             if let Err(error) = sound.try_seek_secs(seek_secs) {
                 log::error!("could not seek audio: {error}");
@@ -550,17 +507,18 @@ impl App {
         }
 
         if response.drag_started() {
-            self.waveform_window.resume_after_scrub = sound.is_playing().unwrap_or(false);
+            self.waveform
+                .begin_scrub(sound.is_playing().unwrap_or(false));
             if let Err(error) = sound.pause() {
                 log::error!("could not pause audio: {error}");
             }
         }
 
-        if response.drag_stopped() && self.waveform_window.resume_after_scrub {
-            if let Err(error) = sound.resume() {
-                log::error!("could not resume audio: {error}");
-            }
-            self.waveform_window.resume_after_scrub = false;
+        if response.drag_stopped()
+            && self.waveform.end_scrub()
+            && let Err(error) = sound.resume()
+        {
+            log::error!("could not resume audio: {error}");
         }
 
         let painter = ui.painter_at(rect);
@@ -585,7 +543,7 @@ impl App {
         for tick in 0..=4 {
             let fraction = tick as f32 / 4.0;
             let x = egui::lerp(rect.x_range(), fraction);
-            let tick_secs = visible_range.start + visible_duration * f64::from(fraction);
+            let tick_secs = WaveformView::tick_secs(&visible_range, tick, 5);
 
             painter.line_segment(
                 [
@@ -604,40 +562,43 @@ impl App {
         }
 
         if visible_duration > 0.0 {
-            let waveform_slice =
-                waveform.slice(waveform_range, (rect.width() / 2.0).max(1.0) as usize);
+            let waveform_slice = self.waveform.slice(
+                visible_range.clone(),
+                (rect.width() / 2.0).max(1.0) as usize,
+            );
             let amplitude_height = wave_rect.height() * 0.46;
 
-            for (index, peak) in waveform_slice.peaks().iter().enumerate() {
-                if !peak.is_available() {
-                    continue;
-                }
+            if let Some(waveform_slice) = waveform_slice {
+                for (index, peak) in waveform_slice.peaks().iter().enumerate() {
+                    if !peak.is_available() {
+                        continue;
+                    }
 
-                let Some(peak_range) = waveform_slice.peak_range(index) else {
-                    continue;
-                };
-                let peak_secs =
-                    (peak_range.start.as_secs_f64() + peak_range.end.as_secs_f64()) * 0.5;
-                let fraction = ((peak_secs - visible_range.start) / visible_duration) as f32;
-                let x = egui::lerp(rect.x_range(), fraction);
-                let top = center_y - peak.max.clamp(-1.0, 1.0) * amplitude_height;
-                let bottom = center_y - peak.min.clamp(-1.0, 1.0) * amplitude_height;
-                let color = if peak_secs <= playhead_secs {
-                    played
-                } else {
-                    future
-                };
+                    let Some(peak_range) = waveform_slice.peak_range(index) else {
+                        continue;
+                    };
+                    let peak_secs =
+                        (peak_range.start.as_secs_f64() + peak_range.end.as_secs_f64()) * 0.5;
+                    let fraction = ((peak_secs - visible_range.start) / visible_duration) as f32;
+                    let x = egui::lerp(rect.x_range(), fraction);
+                    let top = center_y - peak.max.clamp(-1.0, 1.0) * amplitude_height;
+                    let bottom = center_y - peak.min.clamp(-1.0, 1.0) * amplitude_height;
+                    let color = if peak_secs <= playhead_secs {
+                        played
+                    } else {
+                        future
+                    };
 
-                if rect.x_range().contains(x) {
-                    painter.line_segment(
-                        [egui::pos2(x, top), egui::pos2(x, bottom.max(top + 1.0))],
-                        egui::Stroke::new(1.5, color),
-                    );
+                    if rect.x_range().contains(x) {
+                        painter.line_segment(
+                            [egui::pos2(x, top), egui::pos2(x, bottom.max(top + 1.0))],
+                            egui::Stroke::new(1.5, color),
+                        );
+                    }
                 }
             }
 
-            let playhead_fraction =
-                ((playhead_secs - visible_range.start) / visible_duration).clamp(0.0, 1.0) as f32;
+            let playhead_fraction = WaveformView::playhead_fraction(playhead_secs, &visible_range);
             let playhead_x = egui::lerp(rect.x_range(), playhead_fraction);
             painter.line_segment(
                 [
