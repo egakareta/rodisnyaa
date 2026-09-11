@@ -933,13 +933,11 @@ impl SoundNode {
         }
     }
 
-    /// Stops the sink by emptying the queue.
+    /// Stops the sink by emptying the queue and resets its position.
     pub fn stop(&mut self) {
-        let position = self.position();
-
         self.voice.stop();
 
-        self.position_offset = position;
+        self.position_offset = Duration::ZERO;
         self.player_position_anchor = Duration::ZERO;
         self.position_is_held = true;
         self.set_playback_state(PlaybackState::Idle);
@@ -969,7 +967,13 @@ impl SoundNode {
             position.clamp(range_start, end)
         });
 
-        if self.is_playing() || self.is_paused() {
+        let playback_state = self.state();
+        if playback_state == PlaybackState::Paused && position == self.position() {
+            self.resume();
+            return Ok(());
+        }
+
+        if playback_state == PlaybackState::Playing || playback_state == PlaybackState::Paused {
             self.try_seek(position)?;
             self.resume();
             return Ok(());

@@ -1458,7 +1458,6 @@ impl Sound {
         let sound = state.sound_mut(self.id)?;
         sound.cancel_pending_playback();
         sound.stop();
-        sound.try_seek(Duration::ZERO)?;
         sound.wants_playing = false;
         sound.locally_paused = false;
         state.collect_sound_events(self.id);
@@ -1981,7 +1980,6 @@ impl SoundGroup {
             let sound = state.sound_mut(id)?;
             sound.cancel_pending_playback();
             sound.stop();
-            sound.try_seek(Duration::ZERO)?;
             sound.wants_playing = false;
             sound.locally_paused = false;
             state.collect_sound_events(id);
@@ -2391,6 +2389,11 @@ mod tests {
             })
         ));
         assert_eq!(soundscape.poll_event().unwrap().sound, theme.id());
+
+        theme.pause().unwrap();
+        assert!(theme.is_paused().unwrap());
+        theme.play().unwrap();
+        assert!(theme.is_playing().unwrap());
 
         music
             .set_effects(SoundEffects {
