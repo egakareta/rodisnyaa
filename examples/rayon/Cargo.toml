@@ -1,0 +1,30 @@
+[package]
+name = "rayon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.36"
+euphorium = { path = "../.." }
+log = "0.4"
+rayon = "1"
+web-time = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wasm-bindgen-rayon = { version = "1", features = ["no-bundler"] }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Navigator",
+    "Window",
+] }
+
+[features]
+default = ["jack", "nightly"]
+asio = ["euphorium/asio"]
+jack = ["euphorium/jack"]
+nightly = ["euphorium/nightly"]

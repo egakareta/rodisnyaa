@@ -2,6 +2,7 @@
     "rust-analyzer.testExplorer": true,
     "rust-analyzer.linkedProjects": [
         "./Cargo.toml",
-        "./examples/app/Cargo.toml"
+        "./examples/app/Cargo.toml",
+        "./examples/rayon/Cargo.toml"
     ]
 }
