@@ -9,8 +9,8 @@ use std::{
 use eframe::egui;
 use euphorium::{
     format_timestamp_secs, parse_timestamp, AutomaticGainEffect, Backend, Device, DistortionEffect,
-    FilterEffect, LimiterEffect, Soundscape, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
-    SoundSource, Waveform, WaveformBuilder,
+    FilterEffect, LimiterEffect, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
+    SoundSource, Soundscape, Waveform, WaveformBuilder,
 };
 use web_time::Duration;
 
