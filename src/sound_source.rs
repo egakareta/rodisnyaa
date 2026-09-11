@@ -146,6 +146,12 @@ pub enum SoundSource {
     Asset(SoundAsset),
 }
 
+impl PartialEq for SoundSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_resource(other)
+    }
+}
+
 impl SoundSource {
     pub(crate) fn same_resource(&self, other: &Self) -> bool {
         match (self, other) {
