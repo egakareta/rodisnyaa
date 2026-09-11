@@ -1,11 +1,9 @@
 //! Individual sound playback and control.
 
-#[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
-use std::rc::Rc;
+use std::sync::Mutex;
 use std::{
     collections::VecDeque,
     ops::Range,
@@ -106,7 +104,7 @@ pub struct SoundNode {
 }
 
 #[cfg(target_arch = "wasm32")]
-type PendingPlayback = Rc<RefCell<Option<Result<Arc<[u8]>, SoundscapeError>>>>;
+type PendingPlayback = Arc<Mutex<Option<Result<Arc<[u8]>, SoundscapeError>>>>;
 
 #[derive(Clone, Copy)]
 enum SourceMetadata {
@@ -219,21 +217,31 @@ impl SoundNode {
             SourceMetadata::Unloaded => (false, None),
             SourceMetadata::Loaded(duration) => (true, duration),
         };
+        let wants_playing = was_playing || was_paused;
 
         self.source_loaded = source_loaded;
         self.reset_loaded_source(duration);
         let position = duration.map_or(position, |duration| position.min(duration));
         self.position_offset = position;
 
-        if source_loaded && (was_playing || was_paused) {
+        if source_loaded && wants_playing {
             self.play_current_source_at(position)?;
             if was_paused {
                 self.pause();
             }
         }
 
-        self.wants_playing = was_playing || was_paused;
+        self.wants_playing = wants_playing;
         self.locally_paused = was_locally_paused;
+
+        #[cfg(target_arch = "wasm32")]
+        if !source_loaded
+            && wants_playing
+            && let SoundSource::Asset(asset) = self.source.clone()
+        {
+            self.start_asset_playback(&asset)?;
+        }
+
         Ok(())
     }
 
@@ -489,7 +497,7 @@ impl SoundNode {
             let asset = asset.clone();
 
             wasm_bindgen_futures::spawn_local(async move {
-                *pending_result.borrow_mut() = Some(asset.load_browser_bytes().await);
+                *pending_result.lock().unwrap() = Some(asset.load_browser_bytes().await);
             });
 
             self.pending_playback = Some(pending_playback);
@@ -510,7 +518,7 @@ impl SoundNode {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let result = self.pending_playback.as_ref()?.borrow_mut().take()?;
+            let result = self.pending_playback.as_ref()?.lock().unwrap().take()?;
             self.pending_playback = None;
 
             let result = result.and_then(|bytes| {

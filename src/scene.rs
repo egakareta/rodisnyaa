@@ -197,7 +197,6 @@ struct GroupEntry {
 }
 
 struct SoundscapeState {
-    output: Output,
     preferred_backend: Option<Backend>,
     groups: Arena<GroupEntry>,
     sounds: Arena<SoundNode>,
@@ -205,6 +204,7 @@ struct SoundscapeState {
     root: SoundGroupId,
     events: VecDeque<SoundscapeEvent>,
     event_capacity: usize,
+    last_output_error: Option<String>,
 }
 
 fn new_bus() -> (Mixer, MixerSource) {
@@ -239,7 +239,7 @@ fn validate_speed(speed: f32) -> Result<(), SoundscapeError> {
 }
 
 impl SoundscapeState {
-    fn new(output: Output, preferred_backend: Option<Backend>) -> Self {
+    fn new(preferred_backend: Option<Backend>) -> Self {
         let (root_mixer, root_source) = new_bus();
         let mut groups = Arena::default();
         let (index, generation) = groups.insert(GroupEntry {
@@ -255,7 +255,6 @@ impl SoundscapeState {
         });
         let root = SoundGroupId { index, generation };
         let mut state = Self {
-            output,
             preferred_backend,
             groups,
             sounds: Arena::default(),
@@ -263,6 +262,7 @@ impl SoundscapeState {
             root,
             events: VecDeque::new(),
             event_capacity: usize::MAX,
+            last_output_error: None,
         };
         state.attach_group_source(root, root_source);
         state
@@ -292,23 +292,26 @@ impl SoundscapeState {
             .ok_or(SoundscapeError::InvalidSoundHandle)
     }
 
+    /// Wires a group's mixer into its parent bus.
+    ///
+    /// The implicit root has no parent bus, so its source stays pending until
+    /// [`Self::connect_pending_root`] runs with the scene output (from
+    /// [`Soundscape::update`], [`Soundscape::ensure_output`], or the
+    /// scene-output paths that switch devices and backends).
     fn attach_group_source(&mut self, id: SoundGroupId, source: MixerSource) {
         let group = self.group(id).expect("newly created groups remain valid");
         let parent = group.parent;
         let effects = group.effects;
         let volume = if group.muted { 0.0 } else { group.volume };
         let source = effects.apply(source);
-        let player = match parent {
-            Some(parent) => {
-                let parent_mixer = self
-                    .group(parent)
-                    .expect("a group's parent must remain valid")
-                    .mixer
-                    .clone();
-                Some(Player::connect_new(&parent_mixer))
-            }
-            None => self.output.connect_player(),
-        };
+        let player = parent.map(|parent| {
+            let parent_mixer = self
+                .group(parent)
+                .expect("a group's parent must remain valid")
+                .mixer
+                .clone();
+            Player::connect_new(&parent_mixer)
+        });
 
         let group = self
             .group_mut(id)
@@ -325,7 +328,7 @@ impl SoundscapeState {
         }
     }
 
-    fn connect_pending_root(&mut self) {
+    fn connect_pending_root(&mut self, output: &Output) {
         let source = self
             .group_mut(self.root)
             .expect("the root group always exists")
@@ -334,7 +337,7 @@ impl SoundscapeState {
         let Some(source) = source else {
             return;
         };
-        let Some(player) = self.output.connect_player() else {
+        let Some(player) = output.connect_player() else {
             self.group_mut(self.root)
                 .expect("the root group always exists")
                 .pending_source = Some(source);
@@ -349,24 +352,14 @@ impl SoundscapeState {
         root.bus_player = Some(player);
     }
 
-    fn ensure_output(&mut self) -> Result<(), OutputError> {
-        self.output.retry_sink()?;
-        self.connect_pending_root();
+    /// Opens the output when playback needs it and connects a pending root.
+    ///
+    /// Callers hold the graph lock and pass an already-locked output. Always
+    /// lock the graph first and the output second.
+    fn ensure_output(&mut self, output: &Output) -> Result<(), OutputError> {
+        output.retry_sink()?;
+        self.connect_pending_root(output);
         Ok(())
-    }
-
-    fn replace_output(&mut self, output: Output, preferred_backend: Option<Backend>) {
-        self.output = output;
-        self.preferred_backend = preferred_backend;
-        // New outputs on wasm start deferred (no sink) so the first playback can
-        // happen in response to a user gesture. When switching backends/devices
-        // while sounds are playing, leaving the new output unopened disconnects
-        // the graph: sounds still report Playing but no audio flows and position
-        // freezes until the next play(). The switch itself originates from a user
-        // gesture, so try to open immediately to preserve playback. On failure
-        // the root stays pending and is retried on the next play().
-        let _ = self.output.retry_sink();
-        self.rebuild_audio_graph();
     }
 
     fn rebuild_audio_graph(&mut self) {
@@ -672,8 +665,11 @@ impl SoundscapeState {
 /// A `Soundscape` owns one output, every [`Sound`], and a recursive hierarchy of [`SoundGroup`] mixer
 /// buses. Sounds and groups are lightweight handles; applications normally need to store only
 /// this root value.
+///
+/// [`Sound`] and [`SoundGroup`] handles are `Send + Sync` and may be driven from worker threads.
 pub struct Soundscape<K = ()> {
     inner: Arc<Mutex<SoundscapeState>>,
+    output: Mutex<Output>,
     required_sounds: Vec<(K, SoundId)>,
 }
 
@@ -713,14 +709,44 @@ impl Soundscape<()> {
     }
 
     fn from_output(output: Output, preferred_backend: Option<Backend>) -> Self {
+        // Connect the root eagerly when the output already has a sink, so scenes
+        // built on a live output play without waiting for the first update().
+        // Deferred outputs stay pending until update() or ensure_output() opens
+        // them (on WASM, in response to a user gesture).
+        let mut state = SoundscapeState::new(preferred_backend);
+        state.connect_pending_root(&output);
         Self {
-            inner: Arc::new(Mutex::new(SoundscapeState::new(output, preferred_backend))),
+            inner: Arc::new(Mutex::new(state)),
+            output: Mutex::new(output),
             required_sounds: Vec::new(),
         }
     }
 }
 
 impl<K> Soundscape<K> {
+    /// Replaces the scene output, preserving playback when the new output can
+    /// be opened immediately.
+    ///
+    /// New outputs on WASM start deferred (no sink) so the first playback can
+    /// happen in response to a user gesture. When switching backends/devices
+    /// while sounds are playing, leaving the new output unopened disconnects
+    /// the graph: sounds still report Playing but no audio flows and position
+    /// freezes. Switches originate from user gestures, so the new output is
+    /// opened immediately to preserve playback; on failure the root stays
+    /// pending and is retried on the next update().
+    ///
+    /// Locks the graph before the output; worker threads only ever take the
+    /// graph lock, so this order cannot deadlock.
+    fn replace_output(&self, output: Output, preferred_backend: Option<Backend>) {
+        let mut state = self.inner.lock().unwrap();
+        let mut current = self.output.lock().unwrap();
+        *current = output;
+        state.preferred_backend = preferred_backend;
+        let _ = current.retry_sink();
+        state.rebuild_audio_graph();
+        state.connect_pending_root(&current);
+    }
+
     fn sound_handle(&self, id: SoundId) -> Sound {
         Sound {
             soundscape: Arc::downgrade(&self.inner),
@@ -899,6 +925,27 @@ impl<K> Soundscape<K> {
             .into_iter()
             .map(|(index, generation)| SoundId { index, generation })
             .collect::<Vec<_>>();
+
+        // Open a deferred output only once playback actually needs it, so a
+        // browser output is never created before the first user gesture.
+        let wants_playback = ids
+            .iter()
+            .any(|id| state.sound(*id).is_ok_and(|sound| sound.wants_playing));
+        if wants_playback {
+            let output = self.output.lock().unwrap();
+            match output.retry_sink() {
+                Ok(()) => state.last_output_error = None,
+                Err(error) => {
+                    let message = error.to_string();
+                    if state.last_output_error.as_deref() != Some(&message) {
+                        log::error!("could not open audio output: {error}");
+                        state.last_output_error = Some(message);
+                    }
+                }
+            }
+            state.connect_pending_root(&output);
+        }
+
         let mut failures = Vec::new();
 
         for id in ids {
@@ -1009,17 +1056,17 @@ impl<K> Soundscape<K> {
 
     /// Returns the selected audio backend.
     pub fn backend(&self) -> Option<Backend> {
-        self.inner.lock().unwrap().output.backend()
+        self.output.lock().unwrap().backend()
     }
 
     /// Returns the selected audio output device.
     pub fn device(&self) -> Option<Device> {
-        self.inner.lock().unwrap().output.device()
+        self.output.lock().unwrap().device()
     }
 
     /// Returns whether the physical audio output is initialized.
     pub fn has_output(&self) -> bool {
-        self.inner.lock().unwrap().output.has_output()
+        self.output.lock().unwrap().has_output()
     }
 
     /// Returns the backend preferred when opening the output.
@@ -1029,13 +1076,13 @@ impl<K> Soundscape<K> {
 
     /// Returns a UI-friendly label for the active or preferred backend.
     pub fn backend_display_name(&self) -> String {
-        let state = self.inner.lock().unwrap();
-        if state.output.has_output() {
-            state.output.display_name()
+        let preferred = self.inner.lock().unwrap().preferred_backend;
+        let output = self.output.lock().unwrap();
+        if output.has_output() {
+            output.display_name()
         } else {
-            Output::backend_label(state.preferred_backend.unwrap_or_else(|| {
-                state
-                    .output
+            Output::backend_label(preferred.unwrap_or_else(|| {
+                output
                     .backend()
                     .unwrap_or_else(|| rodio::cpal::default_host().id())
             }))
@@ -1043,14 +1090,19 @@ impl<K> Soundscape<K> {
     }
 
     /// Ensures the physical output is open and connects the root mixer to it.
+    ///
+    /// Applications that pump [`Soundscape::update`] every frame usually don't
+    /// need this.
     pub fn ensure_output(&self) -> Result<(), OutputError> {
-        self.inner.lock().unwrap().ensure_output()
+        let mut state = self.inner.lock().unwrap();
+        let output = self.output.lock().unwrap();
+        state.ensure_output(&output)
     }
 
     /// Remembers a backend preference and replaces the current output.
     pub fn set_preferred_backend(&self, backend: Option<Backend>) {
         let output = Output::new_with_preferred_backend(backend);
-        self.inner.lock().unwrap().replace_output(output, backend);
+        self.replace_output(output, backend);
     }
 
     /// Remembers a backend preference by its user-facing label.
@@ -1065,26 +1117,20 @@ impl<K> Soundscape<K> {
     /// Switches the complete scene to a newly opened backend.
     pub fn switch_backend(&self, backend: Backend) -> Result<(), OutputError> {
         let output = Output::try_new_with_backend(backend)?;
-        self.inner
-            .lock()
-            .unwrap()
-            .replace_output(output, Some(backend));
+        self.replace_output(output, Some(backend));
         Ok(())
     }
 
     /// Switches the complete scene to a newly opened output device.
     pub fn switch_device(&self, device: &Device) -> Result<(), OutputError> {
         let output = Output::try_new_with_device(device)?;
-        self.inner
-            .lock()
-            .unwrap()
-            .replace_output(output, Some(device.backend()));
+        self.replace_output(output, Some(device.backend()));
         Ok(())
     }
 
     /// Controls whether dropping the underlying device sink logs a message.
     pub fn log_on_drop(&self, log: bool) {
-        self.inner.lock().unwrap().output.log_on_drop(log);
+        self.output.lock().unwrap().log_on_drop(log);
     }
 }
 
@@ -1227,6 +1273,7 @@ impl<K: SoundKey> SoundscapeBuilder<K> {
 
         Ok(Soundscape {
             inner: dynamic.inner,
+            output: dynamic.output,
             required_sounds,
         })
     }
@@ -1335,7 +1382,8 @@ impl Sound {
     /// Replaces the encoded source while preserving the current position and playback state.
     ///
     /// Playing sounds continue playing and paused sounds remain paused. Setting the same
-    /// underlying resource again is a no-op.
+    /// underlying resource again is a no-op. On WASM, replacing a playing sound with an uncached
+    /// browser asset starts an asynchronous load and resumes playback when it completes.
     pub fn set_source(&self, source: impl Into<SoundSource>) -> Result<(), SoundscapeError> {
         let source = source.into();
         let state = self.state()?;
@@ -1396,7 +1444,6 @@ impl Sound {
     fn play_from_current(&self, restart: bool) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
-        state.ensure_output()?;
         let group_paused = state.group_is_paused(state.sound(self.id)?.group);
         let sound = state.sound_mut(self.id)?;
 

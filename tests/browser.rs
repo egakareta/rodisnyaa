@@ -92,6 +92,51 @@ async fn soundscape_owns_pending_asset_playback_and_duration() {
 }
 
 #[wasm_bindgen_test]
+async fn replacing_playing_sound_with_uncached_asset_starts_loading() {
+    let first = SoundAsset::new("missing/native/first.wav", WAV_DATA_URL);
+    let second = SoundAsset::new("missing/native/second.wav", WAV_DATA_URL);
+    let soundscape = Soundscape::new();
+    let sound = soundscape
+        .create_sound("replacement", SoundSource::asset(first))
+        .expect("the initial browser sound should be created");
+
+    sound
+        .load()
+        .await
+        .expect("the initial browser asset should be loaded");
+    sound
+        .set_looping(true)
+        .expect("the initial browser sound should support looping");
+    sound
+        .play()
+        .expect("the initial browser sound should start playing");
+    assert_eq!(sound.playback_state().unwrap(), PlaybackState::Playing);
+
+    sound
+        .set_source(SoundSource::asset(second))
+        .expect("the replacement browser asset should be accepted");
+    assert!(sound.is_loading().unwrap());
+
+    loop {
+        let failures = soundscape.update();
+        assert!(failures.is_empty(), "browser asset replacement should load");
+        if !sound.is_loading().unwrap() {
+            break;
+        }
+
+        wait_for_browser_task().await;
+    }
+
+    assert!(
+        sound
+            .duration()
+            .unwrap()
+            .is_some_and(|duration| duration > Duration::ZERO)
+    );
+    assert_eq!(sound.playback_state().unwrap(), PlaybackState::Playing);
+}
+
+#[wasm_bindgen_test]
 async fn group_loads_browser_assets_with_shared_configuration() {
     let first = SoundAsset::new("missing/native/first.wav", WAV_DATA_URL);
     let second = SoundAsset::new("missing/native/second.wav", WAV_DATA_URL);
