@@ -112,8 +112,9 @@ Please find these [examples](https://github.com/egakareta/euphorium/tree/master/
 3. rodio seems to prioritize correctness, which is fine, but you end up needing to wrap a lot of code yourself to get predictable behavior e.g. setting time position or playback speed when no audio is playing.
 4. rodio does not officially support AudioWorklet while CPAL does.
 5. No convenience code in rodio for native and web audio resource handling, causing a ton of `#[cfg(target_arch = "wasm32")]`.
-6. No waveform visualization.
-7. Concurrent playback normally requires callers to own and synchronize a collection of players.
+6. Concurrent playback requires callers to own and synchronize a collection of players.
+7. No Rayon support.
+8. No waveform visualization.
 
 ## License
 
