@@ -133,16 +133,6 @@ Please find these [examples](https://github.com/egakareta/euphorium/tree/master/
 6. No waveform visualization.
 7. Concurrent playback normally requires callers to own and synchronize a collection of players.
 
-## Development
-
-This repository uses [mise](https://mise.jdx.dev/).
-
-```sh
-mise bootstrap
-mise install
-mise run check
-```
-
 ## License
 
 Licensed under either of:
