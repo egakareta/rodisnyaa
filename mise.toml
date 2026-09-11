@@ -61,6 +61,11 @@ description = "Serve the example app with Trunk"
 dir = "{{config_root}}/examples/app"
 run = "trunk serve"
 
+[tasks."run:examples:app"]
+description = "Run the example app natively"
+dir = "{{config_root}}/examples/app"
+run = "cargo run"
+
 [tasks."wsl:examples:app"]
 description = "Run the example app in WSL"
 dir = "{{config_root}}/examples/app"
