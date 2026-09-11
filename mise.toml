@@ -62,7 +62,7 @@ run = "trunk serve"
 [env]
 _.path = { path = ["{{ exec(command='cmdshim path') }}"], tools = true }
 
-[_.cmdshim.rodisnyaa]
+[_.cmdshim.euphorium]
 run = [
     "cargo",
     "run",

@@ -15,7 +15,7 @@ use crate::{Backend, Device, OutputError};
 /// Pass an output to [`crate::Soundscape::new_with_output`] to select or reuse a device sink.
 ///
 /// ```no_run
-/// use rodisnyaa::{Soundscape, Output};
+/// use euphorium::{Soundscape, Output};
 ///
 /// let output = Output::new();
 /// let soundscape = Soundscape::new_with_output(output);

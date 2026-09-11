@@ -1,5 +1,5 @@
+use euphorium::{SoundSource, Soundscape, SoundscapeError};
 use include_dir::{Dir, include_dir};
-use rodisnyaa::{SoundSource, Soundscape, SoundscapeError};
 
 static SFX_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/examples/sfx");
 

@@ -7,7 +7,7 @@ use std::{
 };
 
 use eframe::egui;
-use rodisnyaa::{
+use euphorium::{
     format_timestamp_secs, parse_timestamp, AutomaticGainEffect, Backend, Device, DistortionEffect,
     FilterEffect, LimiterEffect, Soundscape, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
     SoundSource, Waveform, WaveformBuilder,
@@ -115,7 +115,7 @@ enum MusicMode {
     File,
 }
 
-rodisnyaa::sound_key! {
+euphorium::sound_key! {
     enum AppSound {
         Music => "music",
     }
@@ -681,7 +681,7 @@ impl eframe::App for App {
             let peak = PEAK_BYTES.load(Ordering::Relaxed);
 
             ui.horizontal(|ui| {
-                ui.label(format!("i love rodisnyaa | fps: {fps:.0}"));
+                ui.label(format!("i love euphorium | fps: {fps:.0}"));
 
                 // Consume all remaining space except what the right label needs.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

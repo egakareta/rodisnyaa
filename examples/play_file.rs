@@ -1,8 +1,8 @@
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> Result<(), rodisnyaa::SoundscapeError> {
+fn main() -> Result<(), euphorium::SoundscapeError> {
     use std::path::PathBuf;
 
-    use rodisnyaa::{SoundSource, Soundscape};
+    use euphorium::{SoundSource, Soundscape};
 
     let soundscape = Soundscape::new();
 

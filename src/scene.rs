@@ -51,7 +51,7 @@ pub trait SoundKey: Copy + Eq + 'static {
 /// Declares an enum implementing [`SoundKey`].
 ///
 /// ```
-/// rodisnyaa::sound_key! {
+/// euphorium::sound_key! {
 ///     pub enum AppSound {
 ///         Preview => "preview",
 ///         BattleTheme => "music/battle/theme",

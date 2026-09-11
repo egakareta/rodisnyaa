@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::{Backend, Device};
 
-/// The error type for rodisnyaa operations.
+/// The error type for Euphorium operations.
 #[derive(Debug, Error)]
 pub enum SoundscapeError {
     /// The error type for I/O operations of the Read, Write, Seek, and associated traits.

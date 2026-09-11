@@ -1,4 +1,4 @@
-# rodisnyaa 🐈
+# Euphorium 🎺
 
 Painless audio playback for native and web platforms.
 
@@ -7,92 +7,109 @@ A small Rust audio player built on top of [rodio](https://github.com/RustAudio/r
 ## Installation
 
 ```sh
-cargo add rodisnyaa
+cargo add euphorium
 ```
 
 ## Usage
 
 ```rust,no_run
-use rodisnyaa::{AudioAsset, Nyaa, NyaaError, NyaaGroup};
+use euphorium::{SoundAsset, Soundscape, SoundscapeError, SoundSource};
 
-fn main() -> Result<(), NyaaError> {
-    let mut nyaa = Nyaa::new();
+fn main() -> Result<(), SoundscapeError> {
+    // One Soundscape owns the output and every sound in the application.
+    let soundscape = Soundscape::new();
+    let music = soundscape.create_group("music")?;
+    let battle = music.create_group("battle")?;
+    let theme = battle.create_sound("theme", SoundSource::file("audio.mp3"))?;
 
-    // Set the volume to 80%
-    nyaa.set_volume(0.8);
+    // Group volume multiplies each descendant's local volume.
+    music.set_volume(0.8)?;
+    theme.set_volume(0.5)?;
+    theme.set_speed(1.25)?;
 
-    // Play an audio file from path
-    nyaa.play_file("audio.mp3")?;
-
-    // Make it 25% faster
-    nyaa.set_speed(1.25);
-
-    // Seek to 30 seconds
-    nyaa.try_seek_secs(30.0)?;
-
-    nyaa.wait_until_end();
+    theme.play()?;
+    theme.try_seek_secs(30.0)?;
+    theme.wait_until_end()?;
     Ok(())
 }
 
-fn play_embedded_audio(audio: &'static [u8]) -> Result<(), NyaaError> {
-    let mut nyaa = Nyaa::new();
-    nyaa.play_static_bytes(audio)?;
+fn play_embedded_audio(audio: &'static [u8]) -> Result<(), SoundscapeError> {
+    let soundscape = Soundscape::new();
+    let sound = soundscape.create_sound("embedded", SoundSource::static_bytes(audio))?;
+    sound.play()?;
     Ok(())
 }
 
-fn where_is_my_audio_at(nyaa: &mut Nyaa) -> Result<(), NyaaError> {
-    nyaa.pause();
-    nyaa.resume();
-    println!("{} / {}", nyaa.position_formatted(), nyaa.duration_formatted());
+fn where_is_my_audio_at(soundscape: &Soundscape) -> Result<(), SoundscapeError> {
+    let sound = soundscape.find_sound("music/battle/theme").expect("theme exists");
+    sound.pause()?;
+    sound.resume()?;
+    println!("{} / {}", sound.position_formatted()?, sound.duration_formatted()?);
     Ok(())
 }
 
-fn play_my_audio_cross_platform() -> Result<(), NyaaError> {
-    // Use file path "assets/music.mp3" on native, resource "audio.mp3" on web
-    let asset = AudioAsset::new("assets/music.mp3", "audio.mp3");
-    let mut nyaa = Nyaa::new();
-    nyaa.start_asset_playback(&asset)?;
-    Ok(())
-}
+fn play_my_audio_cross_platform() -> Result<(), SoundscapeError> {
+    // Use file path "assets/music.mp3" on native and URL "audio.mp3" on web.
+    let asset = SoundAsset::new("assets/music.mp3", "audio.mp3");
+    let soundscape = Soundscape::new();
+    let sound = soundscape.create_sound("music", SoundSource::asset(asset))?;
+    sound.play()?;
 
-fn play_stems(stems: [&'static [u8]; 3]) -> Result<(), NyaaError> {
-    let mut group = NyaaGroup::new();
-    group.set_volume(0.8);
-    group.try_set_speed(1.25)?;
-
-    // Give each source a stable key
-    group.load_static_bytes_keyed([
-        ("drums", stems[0]),
-        ("bass", stems[1]),
-        ("lead", stems[2]),
-    ])?;
-
-    // Tune and start only the members you want
-    group
-        .member_mut("lead")
-        .expect("lead was just loaded")
-        .set_volume(0.6);
-    group.play_member("drums")?; // volume = 0.8
-    group.play_member("bass")?; // volume = 0.8
-
-    // These controls affect selected members only
-    group.pause_member("drums")?;
-    group.try_seek_member("bass", std::time::Duration::from_secs(30))?;
-    group.resume_member("drums")?;
+    // Call this from the application's update loop. It completes browser loads
+    // and reports asynchronous failures for every sound in one place.
+    for failure in soundscape.update() {
+        eprintln!("sound {:?} failed: {}", failure.sound, failure.error);
+    }
     Ok(())
 }
 ```
 
+## Typed sound keys
+
+Use a typed scene when the application has sounds that must always exist:
+
+```rust,no_run
+use euphorium::{Soundscape, SoundscapeError, SoundSource};
+
+euphorium::sound_key! {
+    enum AppSound {
+        Preview => "preview",
+        BattleTheme => "music/battle/theme",
+    }
+}
+
+fn audio_scene(preview: SoundSource, theme: SoundSource) -> Result<Soundscape<AppSound>, SoundscapeError> {
+    Soundscape::<AppSound>::builder()
+        .sound(AppSound::Preview, preview)
+        .sound(AppSound::BattleTheme, theme)
+        .build()
+}
+
+fn play_theme(soundscape: &Soundscape<AppSound>) -> Result<(), SoundscapeError> {
+    // Typed lookup is total: every key was validated by build().
+    soundscape.sound(AppSound::BattleTheme).play()
+}
+```
+
+Required sounds cannot be removed, including through recursive group removal, so typed lookup
+continues returning `Sound` rather than `Option<Sound>`. Runtime-created sounds remain available
+through `soundscape.find_sound("path/to/sound")`.
+
+Use `.placeholder(AppSound::Preview)` when a particular key should exist before its resource is
+known. Use `.build_with_placeholders()` to create empty sounds for every key that has not received
+an explicit source. Empty sounds return `SoundscapeError::NoAudioSource` from `play()` until
+`set_source()` assigns one.
+
 > Browsers require audio output to be opened in response to a user gesture.
 > Start playback from a click, pointer, or keyboard event when possible.
 
-Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/examples) for more guidance.
+Please find these [examples](https://github.com/egakareta/euphorium/tree/master/examples) for more guidance.
 
 ## Feature flags
 
 | Feature         | Enables              |
 | --------------- | -------------------- |
-| `cli` (default) | `rodisnyaa <PATH>`   |
+| `cli` (default) | `euphorium <PATH>`   |
 | `mp3` (default) | MP3 decoding         |
 | `flac`          | FLAC decoding        |
 | `mp4`           | MP4 decoding         |
@@ -112,7 +129,8 @@ Please find these [examples](https://github.com/egakareta/rodisnyaa/tree/master/
 4. rodio does not officially support AudioWorklet while CPAL does.
 5. No convenience code in rodio for native and web audio resource handling, causing a ton of `#[cfg(target_arch = "wasm32")]`.
 6. No waveform visualization.
-7. Concurrent playback requires callers to own and synchronize a collection of players.
+7. Concurrent playback normally requires callers to own and synchronize a collection of players.
+   `Soundscape` instead owns the complete audio scene and exposes stable `Sound` handles.
 
 ## Development
 

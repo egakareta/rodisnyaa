@@ -77,10 +77,10 @@ fn non_negative_f64(value: &str) -> Result<f64, String> {
 #[cfg(not(target_arch = "wasm32"))]
 fn run(cli: Cli) -> Result<(), String> {
     if cli.list_backends {
-        let backends = rodisnyaa::Output::available_backends();
-        let default = rodisnyaa::cpal::default_host().id();
+        let backends = euphorium::Output::available_backends();
+        let default = euphorium::cpal::default_host().id();
         for backend in backends {
-            let label = rodisnyaa::Output::backend_label(backend);
+            let label = euphorium::Output::backend_label(backend);
             if backend == default {
                 println!("{label} (default)");
             } else {
@@ -95,23 +95,23 @@ fn run(cli: Cli) -> Result<(), String> {
         .ok_or_else(|| "no audio file provided".to_owned())?;
     let soundscape = match cli.backend {
         Some(label) => {
-            let backend = rodisnyaa::Output::parse_backend_label(&label).ok_or_else(|| {
-                let available = rodisnyaa::Output::available_backends()
+            let backend = euphorium::Output::parse_backend_label(&label).ok_or_else(|| {
+                let available = euphorium::Output::available_backends()
                     .iter()
-                    .map(|backend| rodisnyaa::Output::backend_label(*backend))
+                    .map(|backend| euphorium::Output::backend_label(*backend))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("unknown audio backend \"{label}\". Available backends: {available}")
             })?;
-            rodisnyaa::Soundscape::new_with_output(
-                rodisnyaa::Output::try_new_with_backend(backend)
+            euphorium::Soundscape::new_with_output(
+                euphorium::Output::try_new_with_backend(backend)
                     .map_err(|error| error.to_string())?,
             )
         }
-        None => rodisnyaa::Soundscape::try_new().map_err(|error| error.to_string())?,
+        None => euphorium::Soundscape::try_new().map_err(|error| error.to_string())?,
     };
     let sound = soundscape
-        .create_sound("cli", rodisnyaa::SoundSource::file(path))
+        .create_sound("cli", euphorium::SoundSource::file(path))
         .map_err(|error| error.to_string())?;
     sound
         .set_volume(cli.volume)
@@ -141,7 +141,7 @@ fn main() -> ExitCode {
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
-    eprintln!("the rodisnyaa CLI is only available on native targets");
+    eprintln!("the euphorium CLI is only available on native targets");
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn accepts_a_path_with_default_playback_settings() {
-        let cli = Cli::try_parse_from(["rodisnyaa", "song.mp3"]).unwrap();
+        let cli = Cli::try_parse_from(["euphorium", "song.mp3"]).unwrap();
 
         assert_eq!(cli.path, Some(PathBuf::from("song.mp3")));
         assert_eq!(cli.backend, None);
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn accepts_custom_playback_settings() {
         let cli = Cli::try_parse_from([
-            "rodisnyaa",
+            "euphorium",
             "song.wav",
             "--volume",
             "0.5",
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn accepts_a_backend_name() {
-        let cli = Cli::try_parse_from(["rodisnyaa", "song.mp3", "--backend", "ALSA"]).unwrap();
+        let cli = Cli::try_parse_from(["euphorium", "song.mp3", "--backend", "ALSA"]).unwrap();
 
         assert_eq!(cli.path, Some(PathBuf::from("song.mp3")));
         assert_eq!(cli.backend.as_deref(), Some("ALSA"));
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn lists_backends_without_a_path() {
-        let cli = Cli::try_parse_from(["rodisnyaa", "--list-backends"]).unwrap();
+        let cli = Cli::try_parse_from(["euphorium", "--list-backends"]).unwrap();
 
         assert_eq!(cli.path, None);
         assert!(cli.list_backends);
@@ -197,15 +197,15 @@ mod tests {
 
     #[test]
     fn requires_a_path_without_list_backends() {
-        assert!(Cli::try_parse_from(["rodisnyaa"]).is_err());
+        assert!(Cli::try_parse_from(["euphorium"]).is_err());
     }
 
     #[test]
     fn rejects_invalid_playback_settings() {
         for arguments in [
-            ["rodisnyaa", "song.mp3", "--volume", "-1"],
-            ["rodisnyaa", "song.mp3", "--speed", "0"],
-            ["rodisnyaa", "song.mp3", "--start", "NaN"],
+            ["euphorium", "song.mp3", "--volume", "-1"],
+            ["euphorium", "song.mp3", "--speed", "0"],
+            ["euphorium", "song.mp3", "--start", "NaN"],
         ] {
             assert!(Cli::try_parse_from(arguments).is_err());
         }

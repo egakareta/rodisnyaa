@@ -1,6 +1,6 @@
 use std::thread;
 
-use rodisnyaa::{SoundSource, Soundscape, SoundscapeError};
+use euphorium::{SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
 static AUDIO_0: &[u8] = include_bytes!("ATLAS 270 [WHAT NO].wav");

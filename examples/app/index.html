@@ -37,7 +37,7 @@
                         var Original = window[globalName];
                         if (
                             typeof Original !== "function" ||
-                            Original.__rodisnyaaPatched
+                            Original.__euphoriumPatched
                         )
                             return;
                         function Patched() {
@@ -48,7 +48,7 @@
                             ))();
                             return trackContext(ctx);
                         }
-                        Patched.__rodisnyaaPatched = true;
+                        Patched.__euphoriumPatched = true;
                         Patched.prototype = Original.prototype;
                         Object.setPrototypeOf(Patched, Original);
                         window[globalName] = Patched;
@@ -59,8 +59,8 @@
                     try {
                         var proto =
                             window[globalName] && window[globalName].prototype;
-                        if (!proto || proto.__rodisnyaaPatched) return;
-                        proto.__rodisnyaaPatched = true;
+                        if (!proto || proto.__euphoriumPatched) return;
+                        proto.__euphoriumPatched = true;
 
                         if (typeof proto.createBufferSource === "function") {
                             var origSource = proto.createBufferSource;
@@ -149,9 +149,9 @@
                         window.AudioWorklet.prototype &&
                         typeof window.AudioWorklet.prototype.addModule ===
                             "function" &&
-                        !window.AudioWorklet.prototype.__rodisnyaaPatched
+                        !window.AudioWorklet.prototype.__euphoriumPatched
                     ) {
-                        window.AudioWorklet.prototype.__rodisnyaaPatched = true;
+                        window.AudioWorklet.prototype.__euphoriumPatched = true;
                         var origAddModule =
                             window.AudioWorklet.prototype.addModule;
                         window.AudioWorklet.prototype.addModule = function (
@@ -166,7 +166,7 @@
                 try {
                     if (
                         typeof window.AudioWorkletNode === "function" &&
-                        !window.AudioWorkletNode.__rodisnyaaPatched
+                        !window.AudioWorkletNode.__euphoriumPatched
                     ) {
                         var OrigNode = window.AudioWorkletNode;
                         function PatchedNode(context, name) {
@@ -177,7 +177,7 @@
                                 [null].concat(args),
                             ))();
                         }
-                        PatchedNode.__rodisnyaaPatched = true;
+                        PatchedNode.__euphoriumPatched = true;
                         PatchedNode.prototype = OrigNode.prototype;
                         Object.setPrototypeOf(PatchedNode, OrigNode);
                         window.AudioWorkletNode = PatchedNode;

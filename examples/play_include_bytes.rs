@@ -1,8 +1,8 @@
-use rodisnyaa::{SoundSource, Soundscape};
+use euphorium::{SoundSource, Soundscape};
 
 static AUDIO: &[u8] = include_bytes!("polar 240 yay.mp3");
 
-fn main() -> Result<(), rodisnyaa::SoundscapeError> {
+fn main() -> Result<(), euphorium::SoundscapeError> {
     let soundscape = Soundscape::new();
     let sound = soundscape.create_sound("music", SoundSource::static_bytes(AUDIO))?;
 

@@ -1,11 +1,11 @@
 [package]
-name = "rodisnyaa"
+name = "euphorium"
 version = "0.2.0"
 edition = "2024"
 description = "Painless audio playback for native and web platforms"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/egakareta/rodisnyaa"
-documentation = "https://docs.rs/rodisnyaa"
+repository = "https://github.com/egakareta/euphorium"
+documentation = "https://docs.rs/euphorium"
 readme = "README.md"
 keywords = ["audio", "playback", "rodio", "wasm", "waveform"]
 categories = ["multimedia::audio", "wasm"]
@@ -18,11 +18,11 @@ include = [
 ]
 
 [lib]
-name = "rodisnyaa"
+name = "euphorium"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rodisnyaa"
+name = "euphorium"
 path = "src/cli.rs"
 required-features = ["cli"]
 

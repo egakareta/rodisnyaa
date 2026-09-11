@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rodisnyaa::{PlaybackState, SoundAsset, SoundSource, Soundscape};
+use euphorium::{PlaybackState, SoundAsset, SoundSource, Soundscape};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};

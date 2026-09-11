@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use rodisnyaa::{Sound, SoundAsset, SoundSource, Soundscape};
+use euphorium::{Sound, SoundAsset, SoundSource, Soundscape};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 #[cfg(target_arch = "wasm32")]

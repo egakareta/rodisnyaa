@@ -4,7 +4,7 @@ use std::{hint::black_box, time::Duration};
 
 #[cfg(not(target_arch = "wasm32"))]
 use criterion::Criterion;
-use rodisnyaa::{Output, Sound, SoundSource, Soundscape, format_timestamp};
+use euphorium::{Output, Sound, SoundSource, Soundscape, format_timestamp};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::{Criterion, Instant};
 

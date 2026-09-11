@@ -1,6 +1,6 @@
 use std::thread;
 
-use rodisnyaa::{SoundSource, Soundscape, SoundscapeError};
+use euphorium::{SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
 static MUSIC: &[u8] = include_bytes!("polar 240 yay.mp3");
@@ -8,7 +8,7 @@ static CLICK: &[u8] = include_bytes!("sfx/soft-hitclap.ogg");
 static FINISH: &[u8] = include_bytes!("sfx/soft-hitfinish.ogg");
 
 // Nested paths create the `effects` and `effects/ui` groups automatically.
-rodisnyaa::sound_key! {
+euphorium::sound_key! {
     enum GameSound {
         Music => "music/theme",
         Click => "effects/ui/click",

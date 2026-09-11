@@ -15,7 +15,7 @@
 /// The polyfill must be evaluated in the worklet global before the wasm-bindgen module is
 /// imported there, because ES imports are evaluated first. Worklet globals persist per
 /// `AudioContext`, so this wraps `AudioWorklet.prototype.addModule` once: every later
-/// `addModule` (including CPAL's internally created `AudioContext`, which rodisnyaa does not
+/// `addModule` (including CPAL's internally created `AudioContext`, which euphorium does not
 /// control) first loads a tiny module that defines the globals, then loads the requested
 /// module. The wrapper composes with other `addModule` wrappers and is a no-op where
 /// `AudioWorklet` is unavailable.
@@ -23,7 +23,7 @@
 pub fn ensure_audioworklet_text_polyfill() {
     const PATCH: &str = r##"(function() {
 try {
-if (globalThis.__rodisnyaaAudioWorkletPatched) return;
+if (globalThis.__euphoriumAudioWorkletPatched) return;
 var proto = globalThis.AudioWorklet && globalThis.AudioWorklet.prototype;
 if (!proto || typeof proto.addModule !== "function") return;
 var origAddModule = proto.addModule;
@@ -46,7 +46,7 @@ return origAddModule.call(self, polyUrl).then(loadOriginal, loadOriginal);
 return loadOriginal();
 }
 };
-globalThis.__rodisnyaaAudioWorkletPatched = true;
+globalThis.__euphoriumAudioWorkletPatched = true;
 } catch (e) {}
 })();"##;
 
