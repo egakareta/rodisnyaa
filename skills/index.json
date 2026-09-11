@@ -1,0 +1,16 @@
+{
+    "skills": [
+        {
+            "name": "euphorium",
+            "version": "0.3.0",
+            "files": [
+                "SKILL.md",
+                "references/api.md",
+                "references/browser.md",
+                "references/examples.md",
+                "references/waveforms.md",
+                "scripts/install.sh"
+            ]
+        }
+    ]
+}
