@@ -118,6 +118,17 @@ enum MusicMode {
     File,
 }
 
+impl MusicMode {
+    const ALL: &'static [MusicMode] = &[MusicMode::StaticBytes, MusicMode::File];
+
+    fn name(&self) -> &'static str {
+        match self {
+            MusicMode::StaticBytes => "Static bytes",
+            MusicMode::File => "File",
+        }
+    }
+}
+
 euphorium::sound_key! {
     enum AppSound {
         Music => "music",
@@ -176,14 +187,6 @@ impl App {
 
         if let Err(error) = self.waveform.set_static_bytes(song.bytes) {
             log::error!("could not start waveform decoding: {error}");
-        }
-    }
-
-    /// Replaces the current [`SoundSource`] for the music track with a new one based on the current [`MusicMode`].
-    pub fn select_music_mode(&mut self, music_mode: MusicMode) {
-        self.music_mode = music_mode;
-        if let Err(error) = self.music().set_source(self.selected_source()) {
-            log::error!("could not change audio mode: {error}");
         }
     }
 
@@ -757,36 +760,28 @@ impl eframe::App for App {
                     let tab_width = 90.0;
                     let tab_height = ui.spacing().interact_size.y;
                     let gap = ui.spacing().item_spacing.x;
-                    let tabs_width = tab_width * 2.0 + gap;
+                    let tabs_width = tab_width * MusicMode::ALL.len() as f32
+                        + gap * (MusicMode::ALL.len().saturating_sub(1)) as f32;
 
                     ui.horizontal(|ui| {
                         let offset = ((ui.available_width() - tabs_width) / 2.0).max(0.0);
                         ui.add_space(offset);
 
-                        if ui
-                            .add_sized(
-                                [tab_width, tab_height],
-                                egui::Button::selectable(
-                                    self.music_mode == MusicMode::StaticBytes,
-                                    "Static bytes",
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.select_music_mode(MusicMode::StaticBytes);
-                        }
+                        for mode in MusicMode::ALL {
+                            if ui
+                                .add_sized(
+                                    [tab_width, tab_height],
+                                    egui::Button::selectable(self.music_mode == *mode, mode.name()),
+                                )
+                                .clicked()
+                            {
+                                self.music_mode = *mode;
 
-                        if ui
-                            .add_sized(
-                                [tab_width, tab_height],
-                                egui::Button::selectable(
-                                    self.music_mode == MusicMode::File,
-                                    "File",
-                                ),
-                            )
-                            .clicked()
-                        {
-                            self.select_music_mode(MusicMode::File);
+                                if let Err(error) = self.music().set_source(self.selected_source())
+                                {
+                                    log::error!("could not change audio mode: {error}");
+                                }
+                            }
                         }
                     });
 
