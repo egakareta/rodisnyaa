@@ -858,8 +858,15 @@ impl eframe::App for App {
                                 )
                                 .show_value(false),
                             );
+                            let timeline_resume_id = egui::Id::new("timeline_resume_after_scrub");
 
                             if response.drag_started() {
+                                let resume = sound.is_playing().unwrap_or(false);
+
+                                ui.ctx().data_mut(|data| {
+                                    data.insert_temp(timeline_resume_id, resume);
+                                });
+
                                 if let Err(error) = sound.pause() {
                                     log::error!("could not pause audio: {error}");
                                 }
@@ -872,8 +879,15 @@ impl eframe::App for App {
                             }
 
                             if response.drag_stopped() {
-                                if let Err(error) = sound.resume() {
-                                    log::error!("could not resume audio: {error}");
+                                let resume = ui.ctx().data_mut(|data| {
+                                    data.remove_temp::<bool>(timeline_resume_id)
+                                        .unwrap_or(false)
+                                });
+
+                                if resume {
+                                    if let Err(error) = sound.resume() {
+                                        log::error!("could not resume audio: {error}");
+                                    }
                                 }
                             }
 
