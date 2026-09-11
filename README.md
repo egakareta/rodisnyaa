@@ -130,7 +130,6 @@ Please find these [examples](https://github.com/egakareta/euphorium/tree/master/
 5. No convenience code in rodio for native and web audio resource handling, causing a ton of `#[cfg(target_arch = "wasm32")]`.
 6. No waveform visualization.
 7. Concurrent playback normally requires callers to own and synchronize a collection of players.
-   `Soundscape` instead owns the complete audio scene and exposes stable `Sound` handles.
 
 ## Development
 
