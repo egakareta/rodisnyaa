@@ -3,7 +3,7 @@ use std::thread;
 use euphorium::{SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
-static MUSIC: &[u8] = include_bytes!("polar 240 yay.mp3");
+static MUSIC: &[u8] = include_bytes!("music/polar 240 yay.mp3");
 static CLICK: &[u8] = include_bytes!("sfx/soft-hitclap.ogg");
 static FINISH: &[u8] = include_bytes!("sfx/soft-hitfinish.ogg");
 

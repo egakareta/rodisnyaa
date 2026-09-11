@@ -16,9 +16,12 @@ use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test_configure!(run_in_browser);
 
-const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/THE UNFORGIVING.mp3");
+const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/music/THE UNFORGIVING.mp3");
 #[cfg(not(target_arch = "wasm32"))]
-const TEST_AUDIO_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/THE UNFORGIVING.mp3");
+const TEST_AUDIO_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/examples/music/THE UNFORGIVING.mp3"
+);
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);

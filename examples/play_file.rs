@@ -8,6 +8,7 @@ fn main() -> Result<(), euphorium::SoundscapeError> {
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
+        .join("music")
         .join("polar 240 yay.mp3");
 
     let sound = soundscape.create_sound("music", SoundSource::file(path))?;

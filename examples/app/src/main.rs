@@ -84,20 +84,23 @@ struct Song {
 const SONGS: [Song; 3] = [
     Song {
         title: "ATLAS 270 [WHAT NO]",
-        bytes: include_bytes!("../../ATLAS 270 [WHAT NO].wav"),
-        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../ATLAS 270 [WHAT NO].wav"),
+        bytes: include_bytes!("../../music/ATLAS 270 [WHAT NO].wav"),
+        native_path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../music/ATLAS 270 [WHAT NO].wav"
+        ),
         wasm_url: "ATLAS 270 [WHAT NO].wav",
     },
     Song {
         title: "polar 240 yay",
-        bytes: include_bytes!("../../polar 240 yay.mp3"),
-        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../polar 240 yay.mp3"),
+        bytes: include_bytes!("../../music/polar 240 yay.mp3"),
+        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../music/polar 240 yay.mp3"),
         wasm_url: "polar 240 yay.mp3",
     },
     Song {
         title: "THE UNFORGIVING",
-        bytes: include_bytes!("../../THE UNFORGIVING.mp3"),
-        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../THE UNFORGIVING.mp3"),
+        bytes: include_bytes!("../../music/THE UNFORGIVING.mp3"),
+        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../music/THE UNFORGIVING.mp3"),
         wasm_url: "THE UNFORGIVING.mp3",
     },
 ];
@@ -722,7 +725,7 @@ impl eframe::App for App {
                                     )
                                     .clicked()
                                 {
-                                    for asset in &self.audio_assets {
+                                    for asset in SOUND_ASSET_PER_SONG.iter() {
                                         asset.clear_browser_cache();
                                     }
                                 }
@@ -901,7 +904,7 @@ impl eframe::App for App {
                                 egui::DragValue::new(&mut position_secs)
                                     .range(sound.seek_range().unwrap_or(0.0..=1.0))
                                     .custom_formatter(|position, _| format_timestamp_secs(position))
-                                    .custom_parser(|input| parse_timestamp(input).map(f64::from)),
+                                    .custom_parser(parse_timestamp),
                             );
 
                             if response.changed() {

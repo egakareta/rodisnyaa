@@ -3,8 +3,8 @@ use std::thread;
 use euphorium::{SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
-static AUDIO_0: &[u8] = include_bytes!("ATLAS 270 [WHAT NO].wav");
-static AUDIO_1: &[u8] = include_bytes!("polar 240 yay.mp3");
+static AUDIO_0: &[u8] = include_bytes!("music/ATLAS 270 [WHAT NO].wav");
+static AUDIO_1: &[u8] = include_bytes!("music/polar 240 yay.mp3");
 
 fn main() -> Result<(), SoundscapeError> {
     let soundscape = Soundscape::new();

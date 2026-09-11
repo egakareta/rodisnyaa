@@ -1,6 +1,6 @@
 use euphorium::{SoundSource, Soundscape};
 
-static AUDIO: &[u8] = include_bytes!("polar 240 yay.mp3");
+static AUDIO: &[u8] = include_bytes!("music/polar 240 yay.mp3");
 
 fn main() -> Result<(), euphorium::SoundscapeError> {
     let soundscape = Soundscape::new();

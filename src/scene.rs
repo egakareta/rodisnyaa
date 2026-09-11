@@ -2007,7 +2007,7 @@ impl SoundGroup {
 mod tests {
     use super::*;
 
-    const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/THE UNFORGIVING.mp3");
+    const TEST_AUDIO_BYTES: &[u8] = include_bytes!("../examples/music/THE UNFORGIVING.mp3");
 
     sound_key! {
         enum TestSound {

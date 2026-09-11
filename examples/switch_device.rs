@@ -3,7 +3,7 @@ use std::thread;
 use euphorium::{Output, SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
-static AUDIO: &[u8] = include_bytes!("polar 240 yay.mp3");
+static AUDIO: &[u8] = include_bytes!("music/polar 240 yay.mp3");
 
 fn main() -> Result<(), SoundscapeError> {
     let devices = Output::available_devices();

@@ -8,7 +8,7 @@ use euphorium::{Output, Sound, SoundSource, Soundscape, format_timestamp};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::{Criterion, Instant};
 
-const AUDIO_BYTES: &[u8] = include_bytes!("../../examples/THE UNFORGIVING.mp3");
+const AUDIO_BYTES: &[u8] = include_bytes!("../../examples/music/THE UNFORGIVING.mp3");
 const NEAR_END_MARGIN: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy)]

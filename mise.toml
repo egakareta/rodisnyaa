@@ -17,7 +17,8 @@ postinstall = ["lefthook install"]
 
 [tasks.check]
 description = "Run all linting and formatting checks"
-run = "mise lint && mise format:cargo --check && mise format:oxfmt --check"
+depends = ["lint"]
+run = "mise format:cargo --check && mise format:oxfmt --check"
 
 [tasks.format]
 description = "Format .rs/.toml/.yml"
