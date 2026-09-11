@@ -64,43 +64,25 @@ fn play_my_audio_cross_platform() -> Result<(), SoundscapeError> {
     }
     Ok(())
 }
-```
 
-## Typed sound keys
-
-Use a typed scene when the application has sounds that must always exist:
-
-```rust,no_run
-use euphorium::{Soundscape, SoundscapeError, SoundSource};
-
+// Define your application's sound keys in one place...
 euphorium::sound_key! {
     enum AppSound {
-        Preview => "preview",
+        Music => "music",
         BattleTheme => "music/battle/theme",
     }
 }
 
-fn audio_scene(preview: SoundSource, theme: SoundSource) -> Result<Soundscape<AppSound>, SoundscapeError> {
-    Soundscape::<AppSound>::builder()
-        .sound(AppSound::Preview, preview)
+fn an_epic_scene(music: SoundSource, theme: SoundSource) -> Result<(), SoundscapeError> {
+    let soundscape = Soundscape::<AppSound>::builder()
+        .sound(AppSound::Music, music)
         .sound(AppSound::BattleTheme, theme)
-        .build()
-}
+        .build()?;
 
-fn play_theme(soundscape: &Soundscape<AppSound>) -> Result<(), SoundscapeError> {
-    // Typed lookup is total: every key was validated by build().
+    // And now you get `Sound` instead of `Option<Sound>` for every key in `AppSound`.
     soundscape.sound(AppSound::BattleTheme).play()
 }
 ```
-
-Required sounds cannot be removed, including through recursive group removal, so typed lookup
-continues returning `Sound` rather than `Option<Sound>`. Runtime-created sounds remain available
-through `soundscape.find_sound("path/to/sound")`.
-
-Use `.placeholder(AppSound::Preview)` when a particular key should exist before its resource is
-known. Use `.build_with_placeholders()` to create empty sounds for every key that has not received
-an explicit source. Empty sounds return `SoundscapeError::NoAudioSource` from `play()` until
-`set_source()` assigns one.
 
 > Browsers require audio output to be opened in response to a user gesture.
 > Start playback from a click, pointer, or keyboard event when possible.
