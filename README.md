@@ -1,5 +1,7 @@
 # Euphorium
 
+[![Crates.io Version](https://img.shields.io/crates/v/euphorium.svg)](https://crates.io/crates/euphorium)
+
 Painless audio playback for native and web platforms.
 
 A small Rust audio player built on top of [rodio](https://github.com/RustAudio/rodio) and [CPAL](https://github.com/RustAudio/cpal).
