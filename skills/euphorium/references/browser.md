@@ -54,11 +54,8 @@ UI update while any relevant sound reports `is_loading() == Ok(true)`.
 `Sound` and `SoundGroup` handles are `Send + Sync`, so worker threads (for example a rayon pool)
 may play, pause, seek, and retune sounds while the main thread pumps `update()`. Keep the
 `Soundscape` root, `update()`, `ensure_output()`, and backend/device switches on the creating
-thread: the root owns the thread-affine `AudioContext`.
-
-Euphorium's AudioWorklet setup is compatible with wasm-bindgen-rayon's generated worker helper.
-Use wasm-bindgen-rayon's normal initialization; no generated-JavaScript patch or Trunk post-build
-hook is required.
+thread: the root owns the thread-affine `AudioContext`. Euphorium's AudioWorklet setup is compatible
+with wasm-bindgen-rayon's generated worker helper.
 
 ## AudioWorklet Setup
 
