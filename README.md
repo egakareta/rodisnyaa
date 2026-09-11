@@ -1,4 +1,4 @@
-# Euphorium 🎺
+# Euphorium
 
 Painless audio playback for native and web platforms.
 
