@@ -1,16 +1,16 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::{
-        atomic::{AtomicUsize, Ordering},
         LazyLock,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
 use eframe::egui;
 use euphorium::{
-    format_timestamp_secs, parse_timestamp, AutomaticGainEffect, Backend, Device, DistortionEffect,
-    FilterEffect, LimiterEffect, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
-    SoundSource, Soundscape, Waveform, WaveformBuilder,
+    AutomaticGainEffect, DistortionEffect, FilterEffect, LimiterEffect, Output, ReverbEffect,
+    Sound, SoundAsset, SoundEffects, SoundSource, Soundscape, Waveform, WaveformBuilder,
+    format_timestamp_secs, parse_timestamp,
 };
 use web_time::Duration;
 
@@ -220,18 +220,6 @@ impl App {
         self.music_mode = music_mode;
         if let Err(error) = self.music().set_source(self.selected_source()) {
             log::error!("could not change audio mode: {error}");
-        }
-    }
-
-    fn select_backend(&mut self, backend: Backend) {
-        if let Err(error) = self.soundscape.switch_backend(backend) {
-            log::error!("could not switch audio backend: {error}");
-        }
-    }
-
-    fn select_device(&mut self, device: &Device) {
-        if let Err(error) = self.soundscape.switch_device(device) {
-            log::error!("could not switch audio device: {error}");
         }
     }
 
@@ -463,17 +451,17 @@ impl App {
                     });
 
                 ui.horizontal(|ui| {
-                    if ui.button("Reset").clicked() {
-                        if let Err(error) = sound.set_effects(SoundEffects::default()) {
-                            log::error!("could not reset audio effects: {error}");
-                        }
+                    if ui.button("Reset").clicked()
+                        && let Err(error) = sound.set_effects(SoundEffects::default())
+                    {
+                        log::error!("could not reset audio effects: {error}");
                     }
                 });
             });
-        if old_effects != effects {
-            if let Err(error) = sound.set_effects(effects) {
-                log::error!("could not apply audio effects: {error}");
-            }
+        if old_effects != effects
+            && let Err(error) = sound.set_effects(effects)
+        {
+            log::error!("could not apply audio effects: {error}");
         }
     }
 
@@ -550,15 +538,14 @@ impl App {
             Err(error) => log::error!("could not prioritize waveform decoding: {error}"),
         }
 
-        if response.clicked() || response.dragged() {
-            if let Some(pointer) = response.interact_pointer_pos() {
-                let pointer_fraction = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-                let seek_secs =
-                    visible_range.start + visible_duration * f64::from(pointer_fraction);
+        if (response.clicked() || response.dragged())
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let pointer_fraction = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let seek_secs = visible_range.start + visible_duration * f64::from(pointer_fraction);
 
-                if let Err(error) = sound.try_seek_secs(seek_secs) {
-                    log::error!("could not seek audio: {error}");
-                }
+            if let Err(error) = sound.try_seek_secs(seek_secs) {
+                log::error!("could not seek audio: {error}");
             }
         }
 
@@ -792,13 +779,16 @@ impl eframe::App for App {
                     }
 
                     if selected_backend != self.soundscape.backend() {
-                        if let Some(backend) = selected_backend {
-                            self.select_backend(backend);
+                        if let Some(backend) = selected_backend
+                            && let Err(error) = self.soundscape.switch_backend(backend)
+                        {
+                            log::error!("could not switch audio backend: {error}");
                         }
-                    } else if selected_device != self.soundscape.device() {
-                        if let Some(device) = selected_device {
-                            self.select_device(&device);
-                        }
+                    } else if selected_device != self.soundscape.device()
+                        && let Some(device) = selected_device
+                        && let Err(error) = self.soundscape.switch_device(&device)
+                    {
+                        log::error!("could not switch audio device: {error}");
                     }
 
                     self.show_waveform(ui);
@@ -872,10 +862,10 @@ impl eframe::App for App {
                                 }
                             }
 
-                            if response.changed() {
-                                if let Err(error) = sound.try_seek_secs(position_secs) {
-                                    log::error!("could not seek audio: {error}");
-                                }
+                            if response.changed()
+                                && let Err(error) = sound.try_seek_secs(position_secs)
+                            {
+                                log::error!("could not seek audio: {error}");
                             }
 
                             if response.drag_stopped() {
@@ -884,10 +874,8 @@ impl eframe::App for App {
                                         .unwrap_or(false)
                                 });
 
-                                if resume {
-                                    if let Err(error) = sound.resume() {
-                                        log::error!("could not resume audio: {error}");
-                                    }
+                                if resume && let Err(error) = sound.resume() {
+                                    log::error!("could not resume audio: {error}");
                                 }
                             }
 
@@ -921,10 +909,10 @@ impl eframe::App for App {
                                     .custom_parser(parse_timestamp),
                             );
 
-                            if response.changed() {
-                                if let Err(error) = sound.try_seek_secs(position_secs) {
-                                    log::error!("could not seek audio: {error}");
-                                }
+                            if response.changed()
+                                && let Err(error) = sound.try_seek_secs(position_secs)
+                            {
+                                log::error!("could not seek audio: {error}");
                             }
 
                             let mut button_builder = egui::UiBuilder::new()
@@ -1018,10 +1006,10 @@ impl eframe::App for App {
                                         .logarithmic(true),
                                 );
 
-                                if response.changed() {
-                                    if let Err(error) = sound.set_speed(speed) {
-                                        log::error!("could not change playback speed: {error}");
-                                    }
+                                if response.changed()
+                                    && let Err(error) = sound.set_speed(speed)
+                                {
+                                    log::error!("could not change playback speed: {error}");
                                 }
 
                                 let mut volume = sound.local_volume().unwrap_or(1.0) * 100.0;
@@ -1033,10 +1021,10 @@ impl eframe::App for App {
                                     egui::Slider::new(&mut volume, 0.0..=100.0).show_value(false),
                                 );
 
-                                if response.changed() {
-                                    if let Err(error) = sound.set_volume(volume / 100.0) {
-                                        log::error!("could not change volume: {error}");
-                                    }
+                                if response.changed()
+                                    && let Err(error) = sound.set_volume(volume / 100.0)
+                                {
+                                    log::error!("could not change volume: {error}");
                                 }
                             });
 
@@ -1048,10 +1036,9 @@ impl eframe::App for App {
                                     .checkbox(&mut preserve_pitch, "Preserve pitch")
                                     .on_hover_text("Use WSOLA for tempo changes")
                                     .changed()
+                                    && let Err(error) = sound.set_preserve_pitch(preserve_pitch)
                                 {
-                                    if let Err(error) = sound.set_preserve_pitch(preserve_pitch) {
-                                        log::error!("could not change pitch preservation: {error}");
-                                    }
+                                    log::error!("could not change pitch preservation: {error}");
                                 }
 
                                 let mut looping = sound.is_looping().unwrap_or(false);
@@ -1059,10 +1046,9 @@ impl eframe::App for App {
                                     .checkbox(&mut looping, "Loop")
                                     .on_hover_text("Repeat playback")
                                     .changed()
+                                    && let Err(error) = sound.set_looping(looping)
                                 {
-                                    if let Err(error) = sound.set_looping(looping) {
-                                        log::error!("could not change looping: {error}");
-                                    }
+                                    log::error!("could not change looping: {error}");
                                 }
                             });
                         },
