@@ -1,6 +1,7 @@
 [tools]
 clang = "latest"
 "github:Unreal-Works/cmdshim" = "latest"
+"github:rust-cross/cargo-xwin" = "latest"
 "github:trunk-rs/trunk" = "latest"
 "github:wasm-bindgen/wasm-pack" = "latest"
 lefthook = "latest"
@@ -58,6 +59,12 @@ run = "wasm-pack test --release --headless --chrome . --test browser_benches -- 
 description = "Serve the example app with Trunk"
 dir = "{{config_root}}/examples/app"
 run = "trunk serve"
+
+[tasks."wsl:examples:app"]
+description = "Run the example app in WSL"
+dir = "{{config_root}}/examples/app"
+env = { CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = "/usr/bin/env" }
+run = "cargo xwin run --target x86_64-pc-windows-msvc"
 
 [env]
 _.path = { path = ["{{ exec(command='cmdshim path') }}"], tools = true }
