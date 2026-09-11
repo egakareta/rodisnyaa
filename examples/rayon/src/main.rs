@@ -123,6 +123,9 @@ impl eframe::App for App {
             );
         }
 
+        // update timeline
+        ui.ctx().request_repaint();
+
         let control_width = ui.available_width().min(360.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 0.0),
