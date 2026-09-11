@@ -27,9 +27,10 @@ fn on_user_gesture(soundscape: &Soundscape) -> Result<(), SoundscapeError> {
 }
 ```
 
-Call `Sound::play()` synchronously from the click, pointer, or keyboard callback. It opens deferred
-WebAudio while transient user activation is available, then starts the browser fetch. Do not await
-`Sound::load()` before first playback unless the output was already opened from a user gesture.
+Call `Sound::play()` synchronously from the click, pointer, or keyboard callback. It records the
+intent immediately; the next `soundscape.update()` on the creating thread then opens deferred
+WebAudio while transient user activation is still available, and starts the browser fetch. Do not
+await `Sound::load()` before first playback unless the output was already opened from a user gesture.
 
 On WASM, the complete response is retained in memory for decoding. Ensure the URL is served, CORS
 allows the application origin, the decoder feature matches the file, and large assets fit the
@@ -47,6 +48,13 @@ fn update_audio(soundscape: &Soundscape) {
 
 `Soundscape::update()` completes all pending loads and records playback events centrally. Request another
 UI update while any relevant sound reports `is_loading() == Ok(true)`.
+
+## Threading
+
+`Sound` and `SoundGroup` handles are `Send + Sync`, so worker threads (for example a rayon pool)
+may play, pause, seek, and retune sounds while the main thread pumps `update()`. Keep the
+`Soundscape` root, `update()`, `ensure_output()`, and backend/device switches on the creating
+thread: the root owns the thread-affine `AudioContext`.
 
 ## AudioWorklet Setup
 

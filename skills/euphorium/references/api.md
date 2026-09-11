@@ -79,6 +79,14 @@ an `SoundAsset`; otherwise `sound.play()` loads it lazily.
 - `try_seek()` and `try_seek_secs()` seek in source time.
 - `wait_until_end()` blocks and is intended for command-line or worker contexts.
 
+`play()` records the intent; the physical output opens when the owning scene is updated
+(`Soundscape::update()` opens it once playback is demanded) or eagerly via
+`Soundscape::ensure_output()`. Without an update loop, call `ensure_output()` before
+`play()`/`wait_until_end()` on a deferred scene.
+
+`Sound` and `SoundGroup` handles are `Send + Sync` and may be driven from worker threads;
+keep the `Soundscape` root, `update()`, and output selection on the creating thread.
+
 Use `playback_state()` for `Idle`, `Loading`, `Playing`, `Paused`, `Ended`, or `Failed`. Calling
 `playback_state()` or `poll_event()` discovers natural completion for that sound.
 
