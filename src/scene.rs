@@ -683,6 +683,14 @@ impl Default for Soundscape<()> {
     }
 }
 
+impl<K: SoundKey> Default for Soundscape<K> {
+    fn default() -> Self {
+        Self::builder()
+            .placeholders()
+            .expect("SoundKey::ALL must contain valid unique paths")
+    }
+}
+
 impl Soundscape<()> {
     /// Creates an empty audio scene using the default output.
     pub fn new() -> Self {

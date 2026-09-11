@@ -83,6 +83,12 @@ struct Song {
 
 const SONGS: [Song; 3] = [
     Song {
+        title: "THE UNFORGIVING",
+        bytes: include_bytes!("../../music/THE UNFORGIVING.mp3"),
+        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../music/THE UNFORGIVING.mp3"),
+        wasm_url: "THE UNFORGIVING.mp3",
+    },
+    Song {
         title: "ATLAS 270 [WHAT NO]",
         bytes: include_bytes!("../../music/ATLAS 270 [WHAT NO].wav"),
         native_path: concat!(
@@ -97,12 +103,6 @@ const SONGS: [Song; 3] = [
         native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../music/polar 240 yay.mp3"),
         wasm_url: "polar 240 yay.mp3",
     },
-    Song {
-        title: "THE UNFORGIVING",
-        bytes: include_bytes!("../../music/THE UNFORGIVING.mp3"),
-        native_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../music/THE UNFORGIVING.mp3"),
-        wasm_url: "THE UNFORGIVING.mp3",
-    },
 ];
 static SOUND_ASSET_PER_SONG: LazyLock<Vec<SoundAsset>> = LazyLock::new(|| {
     SONGS
@@ -110,10 +110,10 @@ static SOUND_ASSET_PER_SONG: LazyLock<Vec<SoundAsset>> = LazyLock::new(|| {
         .map(|song| SoundAsset::new(song.native_path, song.wasm_url))
         .collect()
 });
-const DEFAULT_SONG_INDEX: usize = 2;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum MusicMode {
+    #[default]
     StaticBytes,
     File,
 }
@@ -135,6 +135,7 @@ euphorium::sound_key! {
     }
 }
 
+#[derive(Default)]
 struct App {
     soundscape: Soundscape<AppSound>,
     waveform: WaveformView,
@@ -144,17 +145,8 @@ struct App {
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let soundscape = Soundscape::<AppSound>::builder()
-            .placeholders()
-            .unwrap_or_else(|error| panic!("could not create soundscape: {error}"));
-
-        let mut app = App {
-            soundscape,
-            waveform: WaveformView::new(),
-            music_mode: MusicMode::StaticBytes,
-            selected_song: DEFAULT_SONG_INDEX,
-        };
-        app.select_song(DEFAULT_SONG_INDEX);
+        let mut app = App::default();
+        app.select_song(app.selected_song);
         app
     }
 
