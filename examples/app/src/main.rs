@@ -161,7 +161,7 @@ impl App {
         }
     }
 
-    //// Stops current song and loads the new one. Also changes the waveform to match the new song.
+    /// Stops current song and loads the new one. Also changes the waveform to match the new song.
     pub fn select_song(&mut self, selected_song: usize) {
         let song = SONGS[selected_song];
 
