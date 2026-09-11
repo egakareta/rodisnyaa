@@ -574,14 +574,16 @@ impl SoundscapeState {
             let entry = self
                 .sound_mut(id)
                 .expect("a sound remains valid while collecting its events");
-            if matches!(
-                event,
+            match event {
+                PlaybackEvent::StateChanged {
+                    current: PlaybackState::Playing | PlaybackState::Paused,
+                    ..
+                } => entry.wants_playing = true,
                 PlaybackEvent::StateChanged {
                     current: PlaybackState::Idle | PlaybackState::Ended | PlaybackState::Failed,
                     ..
-                }
-            ) {
-                entry.wants_playing = false;
+                } => entry.wants_playing = false,
+                _ => {}
             }
             if self.event_capacity > 0 {
                 if self.events.len() >= self.event_capacity {
@@ -1315,9 +1317,10 @@ impl Sound {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.source.len())
     }
 
-    /// Replaces the encoded source without starting playback.
+    /// Replaces the encoded source while preserving the current position and playback state.
     ///
-    /// Setting the same underlying resource again is a no-op.
+    /// Playing sounds continue playing and paused sounds remain paused. Setting the same
+    /// underlying resource again is a no-op.
     pub fn set_source(&self, source: impl Into<SoundSource>) -> Result<(), SoundscapeError> {
         let source = source.into();
         let state = self.state()?;
@@ -2291,6 +2294,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(sound.position().unwrap(), position);
+    }
+
+    #[test]
+    fn replacing_source_preserves_the_timeline() {
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let sound = soundscape
+            .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        let position = Duration::from_secs(42);
+
+        sound.try_seek(position).unwrap();
+        sound
+            .set_source(SoundSource::shared_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+
+        assert_eq!(sound.position().unwrap(), position);
+    }
+
+    #[test]
+    fn replacing_source_preserves_playback_state() {
+        let soundscape = Soundscape::new();
+        if !soundscape.has_output() {
+            eprintln!("Skipping playback assertions: no audio output is available");
+            return;
+        }
+        let sound = soundscape
+            .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+
+        sound.play().unwrap();
+        sound
+            .set_source(SoundSource::shared_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        assert!(sound.is_playing().unwrap());
+
+        sound.pause().unwrap();
+        sound
+            .set_source(SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            .unwrap();
+        assert!(sound.is_paused().unwrap());
+
+        sound.try_seek(Duration::from_secs(42)).unwrap();
+        sound.resume().unwrap();
+        assert!(sound.is_playing().unwrap());
     }
 
     #[test]

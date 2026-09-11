@@ -205,6 +205,11 @@ impl SoundNode {
         }
 
         let metadata = Self::source_metadata(&source)?;
+        let position = self.position();
+        let previous_state = self.state();
+        let was_playing = previous_state == PlaybackState::Playing;
+        let was_paused = previous_state == PlaybackState::Paused;
+        let was_locally_paused = self.locally_paused;
         self.cancel_pending_playback();
         self.source = source;
         self.source_revision = self.source_revision.wrapping_add(1);
@@ -215,8 +220,18 @@ impl SoundNode {
 
         self.source_loaded = source_loaded;
         self.reset_loaded_source(duration);
-        self.wants_playing = false;
-        self.locally_paused = false;
+        let position = duration.map_or(position, |duration| position.min(duration));
+        self.position_offset = position;
+
+        if source_loaded && (was_playing || was_paused) {
+            self.play_current_source_at(position)?;
+            if was_paused {
+                self.pause();
+            }
+        }
+
+        self.wants_playing = was_playing || was_paused;
+        self.locally_paused = was_locally_paused;
         Ok(())
     }
 
