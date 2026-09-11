@@ -4,7 +4,7 @@ use crate::{Backend, Device};
 
 /// The error type for rodisnyaa operations.
 #[derive(Debug, Error)]
-pub enum NyaaError {
+pub enum SoundscapeError {
     /// The error type for I/O operations of the Read, Write, Seek, and associated traits.
     #[error("failed to open audio file: {0}")]
     File(#[source] std::io::Error),
@@ -71,7 +71,7 @@ pub enum NyaaError {
 
     /// Two handles from different audio roots were used together.
     #[error("sounds and groups must belong to the same scene")]
-    DifferentNyaa,
+    DifferentSoundscape,
 
     /// Reparenting a group would make it one of its own ancestors.
     #[error("a sound group cannot be parented beneath itself")]

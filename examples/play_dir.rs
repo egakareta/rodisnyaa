@@ -1,9 +1,9 @@
 use include_dir::{Dir, include_dir};
-use rodisnyaa::{Nyaa, NyaaError, SoundSource};
+use rodisnyaa::{SoundSource, Soundscape, SoundscapeError};
 
 static SFX_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/examples/sfx");
 
-fn main() -> Result<(), NyaaError> {
+fn main() -> Result<(), SoundscapeError> {
     let candidates: Vec<_> = SFX_DIR
         .files()
         .filter(|file| {
@@ -19,7 +19,7 @@ fn main() -> Result<(), NyaaError> {
         "no playable files found, enable a decoder feature"
     );
 
-    let nyaa = Nyaa::new();
+    let soundscape = Soundscape::new();
 
     for file in &candidates {
         let name = file
@@ -27,10 +27,10 @@ fn main() -> Result<(), NyaaError> {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("?");
-        nyaa.create_sound(name, SoundSource::static_bytes(file.contents()))?;
+        soundscape.create_sound(name, SoundSource::static_bytes(file.contents()))?;
     }
 
-    let sounds = nyaa.sounds();
+    let sounds = soundscape.sounds();
     println!("Available sounds ({}):", sounds.len());
     for sound in &sounds {
         let name = sound.name().unwrap_or_else(|_| "?".to_owned());

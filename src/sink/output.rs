@@ -10,15 +10,15 @@ use rodio::{
 
 use crate::{Backend, Device, OutputError};
 
-/// A cloneable handle to an audio output sink owned by a [`crate::Nyaa`] audio scene.
+/// A cloneable handle to an audio output sink owned by a [`crate::Soundscape`] audio scene.
 ///
-/// Pass an output to [`crate::Nyaa::new_with_output`] to select or reuse a device sink.
+/// Pass an output to [`crate::Soundscape::new_with_output`] to select or reuse a device sink.
 ///
 /// ```no_run
-/// use rodisnyaa::{Nyaa, Output};
+/// use rodisnyaa::{Soundscape, Output};
 ///
 /// let output = Output::new();
-/// let nyaa = Nyaa::new_with_output(output);
+/// let soundscape = Soundscape::new_with_output(output);
 /// ```
 #[derive(Clone)]
 pub struct Output {

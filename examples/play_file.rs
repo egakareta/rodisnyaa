@@ -1,16 +1,16 @@
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> Result<(), rodisnyaa::NyaaError> {
+fn main() -> Result<(), rodisnyaa::SoundscapeError> {
     use std::path::PathBuf;
 
-    use rodisnyaa::{Nyaa, SoundSource};
+    use rodisnyaa::{SoundSource, Soundscape};
 
-    let nyaa = Nyaa::new();
+    let soundscape = Soundscape::new();
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
         .join("polar 240 yay.mp3");
 
-    let sound = nyaa.create_sound("music", SoundSource::file(path))?;
+    let sound = soundscape.create_sound("music", SoundSource::file(path))?;
     sound.set_volume(0.8)?;
     sound.set_speed(0.9)?;
     sound.try_seek_secs(30.0)?;

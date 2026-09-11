@@ -5,7 +5,7 @@ use rodio::{
 };
 use web_time::Duration;
 
-use crate::NyaaError;
+use crate::SoundscapeError;
 
 /// Settings for a rodio low-pass or high-pass filter.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -149,21 +149,21 @@ impl Default for SoundEffects {
 }
 
 impl SoundEffects {
-    pub(crate) fn validate(&self) -> Result<(), NyaaError> {
+    pub(crate) fn validate(&self) -> Result<(), SoundscapeError> {
         if !self.input_gain.is_finite() || self.input_gain < 0.0 {
-            return Err(NyaaError::InvalidEffect(
+            return Err(SoundscapeError::InvalidEffect(
                 "input gain must be finite and non-negative",
             ));
         }
 
         for filter in [self.high_pass, self.low_pass].into_iter().flatten() {
             if filter.frequency == 0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "filter frequency must be greater than zero",
                 ));
             }
             if !filter.q.is_finite() || filter.q <= 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "filter Q must be finite and greater than zero",
                 ));
             }
@@ -171,12 +171,12 @@ impl SoundEffects {
 
         if let Some(effect) = self.distortion {
             if !effect.gain.is_finite() || effect.gain < 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "distortion gain must be finite and non-negative",
                 ));
             }
             if !effect.threshold.is_finite() || effect.threshold <= 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "distortion threshold must be finite and greater than zero",
                 ));
             }
@@ -184,12 +184,12 @@ impl SoundEffects {
 
         if let Some(effect) = self.automatic_gain {
             if !effect.target_level.is_finite() || effect.target_level <= 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "automatic gain target must be finite and greater than zero",
                 ));
             }
             if !effect.maximum_gain.is_finite() || effect.maximum_gain <= 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "automatic maximum gain must be finite and greater than zero",
                 ));
             }
@@ -198,19 +198,19 @@ impl SoundEffects {
         if let Some(effect) = self.reverb
             && (!effect.amplitude.is_finite() || effect.amplitude < 0.0)
         {
-            return Err(NyaaError::InvalidEffect(
+            return Err(SoundscapeError::InvalidEffect(
                 "reverb amplitude must be finite and non-negative",
             ));
         }
 
         if let Some(effect) = self.limiter {
             if !effect.threshold_db.is_finite() || effect.threshold_db >= 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "limiter threshold must be finite and below zero dBFS",
                 ));
             }
             if !effect.knee_width_db.is_finite() || effect.knee_width_db < 0.0 {
-                return Err(NyaaError::InvalidEffect(
+                return Err(SoundscapeError::InvalidEffect(
                     "limiter knee width must be finite and non-negative",
                 ));
             }

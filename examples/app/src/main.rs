@@ -9,7 +9,7 @@ use std::{
 use eframe::egui;
 use rodisnyaa::{
     format_timestamp_secs, parse_timestamp, AutomaticGainEffect, Backend, Device, DistortionEffect,
-    FilterEffect, LimiterEffect, Nyaa, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
+    FilterEffect, LimiterEffect, Soundscape, Output, ReverbEffect, Sound, SoundAsset, SoundEffects,
     SoundSource, Waveform, WaveformBuilder,
 };
 use web_time::Duration;
@@ -155,7 +155,7 @@ impl WaveformWindow {
 }
 
 struct App {
-    nyaa: Nyaa<AppSound>,
+    soundscape: Soundscape<AppSound>,
     waveform: Option<WaveformBuilder>,
     waveform_window: WaveformWindow,
     music_mode: MusicMode,
@@ -164,12 +164,12 @@ struct App {
 
 impl App {
     fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let nyaa = Nyaa::<AppSound>::builder()
+        let soundscape = Soundscape::<AppSound>::builder()
             .placeholders()
-            .unwrap_or_else(|error| panic!("could not create nyaa: {error}"));
+            .unwrap_or_else(|error| panic!("could not create soundscape: {error}"));
 
         let mut app = App {
-            nyaa,
+            soundscape,
             waveform: None,
             waveform_window: WaveformWindow::default(),
             music_mode: MusicMode::StaticBytes,
@@ -181,7 +181,7 @@ impl App {
 
     /// Get the [`Sound`] for the music track.
     pub fn music(&self) -> Sound {
-        self.nyaa.sound(AppSound::Music)
+        self.soundscape.sound(AppSound::Music)
     }
 
     /// Get the [`SoundSource`] for the currently selected song based on the current [`MusicMode`].
@@ -221,13 +221,13 @@ impl App {
     }
 
     fn select_backend(&mut self, backend: Backend) {
-        if let Err(error) = self.nyaa.switch_backend(backend) {
+        if let Err(error) = self.soundscape.switch_backend(backend) {
             log::error!("could not switch audio backend: {error}");
         }
     }
 
     fn select_device(&mut self, device: &Device) {
-        if let Err(error) = self.nyaa.switch_device(device) {
+        if let Err(error) = self.soundscape.switch_device(device) {
             log::error!("could not switch audio device: {error}");
         }
     }
@@ -663,7 +663,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let sound = self.music();
-        for failure in self.nyaa.update() {
+        for failure in self.soundscape.update() {
             log::error!(
                 "could not update sound {:?}: {}",
                 failure.sound,
@@ -698,8 +698,8 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     let mut selected_song = self.selected_song;
-                    let mut selected_backend = self.nyaa.backend();
-                    let mut selected_device = self.nyaa.device();
+                    let mut selected_backend = self.soundscape.backend();
+                    let mut selected_device = self.soundscape.device();
 
                     ui.add_enabled_ui(!sound.is_loading().unwrap_or(false), |ui| {
                         ui.horizontal(|ui| {
@@ -788,11 +788,11 @@ impl eframe::App for App {
                         self.select_song(selected_song);
                     }
 
-                    if selected_backend != self.nyaa.backend() {
+                    if selected_backend != self.soundscape.backend() {
                         if let Some(backend) = selected_backend {
                             self.select_backend(backend);
                         }
-                    } else if selected_device != self.nyaa.device() {
+                    } else if selected_device != self.soundscape.device() {
                         if let Some(device) = selected_device {
                             self.select_device(&device);
                         }

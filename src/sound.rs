@@ -18,7 +18,7 @@ use dasp_sample::FromSample;
 use rodio::{Player, Source};
 
 use crate::{
-    NyaaError, PlaybackRangeSource, SoundAsset, SoundEffects, SoundSource, decoder,
+    PlaybackRangeSource, SoundAsset, SoundEffects, SoundSource, SoundscapeError, decoder,
     format_timestamp, scene::SoundGroupId, wsola::Wsola,
 };
 
@@ -104,7 +104,7 @@ pub(crate) struct SoundNode {
 }
 
 #[cfg(target_arch = "wasm32")]
-type PendingPlayback = Rc<RefCell<Option<Result<Arc<[u8]>, NyaaError>>>>;
+type PendingPlayback = Rc<RefCell<Option<Result<Arc<[u8]>, SoundscapeError>>>>;
 
 #[derive(Clone, Copy)]
 enum SourceMetadata {
@@ -118,7 +118,7 @@ impl SoundNode {
         group: SoundGroupId,
         source: SoundSource,
         mixer: rodio::mixer::Mixer,
-    ) -> Result<Self, NyaaError> {
+    ) -> Result<Self, SoundscapeError> {
         let voice = Player::connect_new(&mixer);
         let mut sound = Self {
             name,
@@ -184,7 +184,7 @@ impl SoundNode {
         self.voice.set_speed(self.player_speed());
     }
 
-    pub(crate) fn load_source(&mut self) -> Result<bool, NyaaError> {
+    pub(crate) fn load_source(&mut self) -> Result<bool, SoundscapeError> {
         let metadata = Self::source_metadata(&self.source.clone())
             .map_err(|error| self.record_failure(error))?;
         match metadata {
@@ -199,7 +199,7 @@ impl SoundNode {
         }
     }
 
-    pub(crate) fn replace_source(&mut self, source: SoundSource) -> Result<(), NyaaError> {
+    pub(crate) fn replace_source(&mut self, source: SoundSource) -> Result<(), SoundscapeError> {
         if self.source.same_resource(&source) {
             return Ok(());
         }
@@ -220,7 +220,7 @@ impl SoundNode {
         Ok(())
     }
 
-    fn source_metadata(source: &SoundSource) -> Result<SourceMetadata, NyaaError> {
+    fn source_metadata(source: &SoundSource) -> Result<SourceMetadata, SoundscapeError> {
         let duration = match source {
             SoundSource::Empty => return Ok(SourceMetadata::Unloaded),
             SoundSource::StaticBytes(bytes) => decoder::from_static_bytes(bytes)?.total_duration(),
@@ -250,7 +250,7 @@ impl SoundNode {
     /// Resumes playback of a paused player.
     ///
     /// No effect if not paused.
-    fn play_source<S>(&mut self, source: S) -> Result<(), NyaaError>
+    fn play_source<S>(&mut self, source: S) -> Result<(), SoundscapeError>
     where
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
@@ -262,7 +262,7 @@ impl SoundNode {
         &mut self,
         source: S,
         requested_position: Option<Duration>,
-    ) -> Result<(), NyaaError>
+    ) -> Result<(), SoundscapeError>
     where
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
@@ -275,7 +275,7 @@ impl SoundNode {
         mut source: S,
         requested_position: Option<Duration>,
         autoplay: bool,
-    ) -> Result<(), NyaaError>
+    ) -> Result<(), SoundscapeError>
     where
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
@@ -301,7 +301,7 @@ impl SoundNode {
         if !position.is_zero() {
             source
                 .try_seek(position)
-                .map_err(NyaaError::Seek)
+                .map_err(SoundscapeError::Seek)
                 .map_err(|error| self.record_failure(error))?;
         }
 
@@ -342,9 +342,9 @@ impl SoundNode {
         Ok(())
     }
 
-    fn play_current_source_at(&mut self, position: Duration) -> Result<(), NyaaError> {
+    fn play_current_source_at(&mut self, position: Duration) -> Result<(), SoundscapeError> {
         match self.source.clone() {
-            SoundSource::Empty => Err(self.record_failure(NyaaError::NoAudioSource)),
+            SoundSource::Empty => Err(self.record_failure(SoundscapeError::NoAudioSource)),
             SoundSource::StaticBytes(bytes) => {
                 let source = decoder::from_static_bytes(bytes)
                     .map_err(|error| self.record_failure(error))?;
@@ -370,7 +370,7 @@ impl SoundNode {
                 let source = decoder::from_shared_bytes(
                     asset
                         .cached_browser_bytes()
-                        .ok_or_else(|| self.record_failure(NyaaError::NoAudioSource))?,
+                        .ok_or_else(|| self.record_failure(SoundscapeError::NoAudioSource))?,
                 )
                 .map_err(|error| self.record_failure(error))?;
 
@@ -382,14 +382,14 @@ impl SoundNode {
     fn playback_bounds(
         &self,
         duration: Option<Duration>,
-    ) -> Result<(Duration, Option<Duration>), NyaaError> {
+    ) -> Result<(Duration, Option<Duration>), SoundscapeError> {
         let Some(range) = self.loop_range.as_ref() else {
             return Ok((Duration::ZERO, duration));
         };
         let end = duration.map_or(range.end, |duration| range.end.min(duration));
 
         if range.start >= end {
-            return Err(NyaaError::InvalidPlaybackRange);
+            return Err(SoundscapeError::InvalidPlaybackRange);
         }
 
         Ok((range.start, Some(end)))
@@ -440,7 +440,7 @@ impl SoundNode {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn load_resolved_bytes(&mut self, bytes: Arc<[u8]>) -> Result<(), NyaaError> {
+    pub(crate) fn load_resolved_bytes(&mut self, bytes: Arc<[u8]>) -> Result<(), SoundscapeError> {
         let duration = decoder::from_shared_bytes(bytes)
             .map_err(|error| self.record_failure(error))?
             .total_duration();
@@ -451,7 +451,7 @@ impl SoundNode {
 
     /// Plays an audio asset using its native path.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), NyaaError> {
+    pub fn play_file(&mut self, path: impl AsRef<Path>) -> Result<(), SoundscapeError> {
         let path = path.as_ref().to_path_buf();
         let source = decoder::from_file(&path).map_err(|error| self.record_failure(error))?;
 
@@ -463,7 +463,7 @@ impl SoundNode {
     ///
     /// Native assets start synchronously. Browser assets are fetched in the background and
     /// completed by polling the owning scene.
-    pub fn start_asset_playback(&mut self, asset: &SoundAsset) -> Result<(), NyaaError> {
+    pub fn start_asset_playback(&mut self, asset: &SoundAsset) -> Result<(), SoundscapeError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.play_file(asset.native_path())
@@ -501,7 +501,7 @@ impl SoundNode {
     /// Completes a browser asset playback once its fetch has finished.
     ///
     /// Returns `None` while no playback is pending or the current fetch is still in progress.
-    pub fn poll_pending_playback(&mut self) -> Option<Result<(), NyaaError>> {
+    pub fn poll_pending_playback(&mut self) -> Option<Result<(), SoundscapeError>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             None
@@ -589,7 +589,7 @@ impl SoundNode {
         }
     }
 
-    fn record_failure(&mut self, error: NyaaError) -> NyaaError {
+    fn record_failure(&mut self, error: SoundscapeError) -> SoundscapeError {
         self.set_playback_state(PlaybackState::Failed);
         error
     }
@@ -610,7 +610,7 @@ impl SoundNode {
     ///
     /// If there is no current source, this updates the reported position without starting
     /// playback.
-    pub fn try_seek(&mut self, position: Duration) -> Result<(), NyaaError> {
+    pub fn try_seek(&mut self, position: Duration) -> Result<(), SoundscapeError> {
         if self.set_position_if_empty(position) {
             return Ok(());
         }
@@ -620,7 +620,7 @@ impl SoundNode {
             let player_position = self.player_position_for_source_position(position);
             self.voice
                 .try_seek(player_position)
-                .map_err(NyaaError::Seek)
+                .map_err(SoundscapeError::Seek)
                 .map_err(|error| self.record_failure(error))?;
             self.position_offset = position;
             self.player_position_anchor = player_position;
@@ -636,9 +636,9 @@ impl SoundNode {
     }
 
     /// Convenience version of [`Self::try_seek`] that accepts the position in seconds.
-    pub fn try_seek_secs(&mut self, position_secs: f64) -> Result<(), NyaaError> {
+    pub fn try_seek_secs(&mut self, position_secs: f64) -> Result<(), SoundscapeError> {
         if position_secs.is_nan() || position_secs.is_infinite() || position_secs < 0.0 {
-            return Err(self.record_failure(NyaaError::InvalidSeekPosition));
+            return Err(self.record_failure(SoundscapeError::InvalidSeekPosition));
         }
 
         self.try_seek(Duration::from_secs_f64(position_secs))
@@ -649,7 +649,7 @@ impl SoundNode {
     ///
     /// You *can* use this on non-wasm targets, but it will be slower than calling `try_seek`
     /// directly.
-    pub fn try_seek_with_decode(&mut self, position: Duration) -> Result<(), NyaaError> {
+    pub fn try_seek_with_decode(&mut self, position: Duration) -> Result<(), SoundscapeError> {
         if self.set_position_if_empty(position) {
             return Ok(());
         }
@@ -660,7 +660,7 @@ impl SoundNode {
         };
 
         match self.source.clone() {
-            SoundSource::Empty => Err(NyaaError::NoAudioSource),
+            SoundSource::Empty => Err(SoundscapeError::NoAudioSource),
             SoundSource::StaticBytes(bytes) => {
                 self.seek_with_decode_source(decoder::from_static_bytes(bytes)?, position)
             }
@@ -679,7 +679,7 @@ impl SoundNode {
                 let source = decoder::from_shared_bytes(
                     asset
                         .cached_browser_bytes()
-                        .ok_or(NyaaError::NoAudioSource)?,
+                        .ok_or(SoundscapeError::NoAudioSource)?,
                 )?;
 
                 self.seek_with_decode_source(source, position)
@@ -724,7 +724,7 @@ impl SoundNode {
         &mut self,
         mut source: S,
         position: Duration,
-    ) -> Result<(), NyaaError>
+    ) -> Result<(), SoundscapeError>
     where
         S: Source + Send + 'static,
         f32: FromSample<S::Item>,
@@ -742,7 +742,7 @@ impl SoundNode {
         });
         source
             .try_seek(position)
-            .map_err(NyaaError::Seek)
+            .map_err(SoundscapeError::Seek)
             .map_err(|error| self.record_failure(error))?;
         let source = PlaybackRangeSource::new(
             source,
@@ -790,7 +790,7 @@ impl SoundNode {
     ///
     /// If a source is playing, its decoder is rebuilt at the current position and keeps its
     /// paused state. Loaded or stopped sources use the settings the next time playback starts.
-    pub fn set_effects(&mut self, effects: SoundEffects) -> Result<(), NyaaError> {
+    pub fn set_effects(&mut self, effects: SoundEffects) -> Result<(), SoundscapeError> {
         effects.validate()?;
 
         if effects == self.effects {
@@ -940,10 +940,10 @@ impl SoundNode {
     /// The requested position is clamped to the known duration and the configured
     /// playback bounds (see [`Self::set_loop_range`]).
     ///
-    /// Returns [`NyaaError::NoAudioSource`] when no source is available.
-    pub fn try_play_at(&mut self, position: Duration) -> Result<(), NyaaError> {
+    /// Returns [`SoundscapeError::NoAudioSource`] when no source is available.
+    pub fn try_play_at(&mut self, position: Duration) -> Result<(), SoundscapeError> {
         if !self.has_current_source() {
-            return Err(self.record_failure(NyaaError::NoAudioSource));
+            return Err(self.record_failure(SoundscapeError::NoAudioSource));
         }
 
         let duration = self.duration();
@@ -982,7 +982,7 @@ impl SoundNode {
     }
 
     /// Changes playback speed and reports errors from rebuilding a pitch-preserving source.
-    pub fn try_set_speed(&mut self, speed: f32) -> Result<(), NyaaError> {
+    pub fn try_set_speed(&mut self, speed: f32) -> Result<(), SoundscapeError> {
         if self.preserve_pitch && self.speed != speed && !self.is_empty() {
             let position = self.position();
             let previous_speed = std::mem::replace(&mut self.speed, speed);
@@ -1017,7 +1017,7 @@ impl SoundNode {
     ///
     /// Active playback is rebuilt at its current source position so the new mode takes effect
     /// immediately while preserving whether playback is paused.
-    pub fn set_preserve_pitch(&mut self, preserve_pitch: bool) -> Result<(), NyaaError> {
+    pub fn set_preserve_pitch(&mut self, preserve_pitch: bool) -> Result<(), SoundscapeError> {
         if preserve_pitch == self.preserve_pitch {
             return Ok(());
         }
@@ -1062,9 +1062,9 @@ impl SoundNode {
     /// Sets the source-time range used as the playback and looping boundary.
     ///
     /// The range applies to active and future playback. Its end is clamped to the source duration.
-    pub fn set_loop_range(&mut self, range: Range<Duration>) -> Result<(), NyaaError> {
+    pub fn set_loop_range(&mut self, range: Range<Duration>) -> Result<(), SoundscapeError> {
         if range.start >= range.end {
-            return Err(NyaaError::InvalidPlaybackRange);
+            return Err(SoundscapeError::InvalidPlaybackRange);
         }
 
         let state = self.state();

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rodisnyaa::{Nyaa, PlaybackState, SoundAsset, SoundSource};
+use rodisnyaa::{PlaybackState, SoundAsset, SoundSource, Soundscape};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
@@ -34,8 +34,8 @@ async fn wait_for_browser_task() {
 async fn duration_from_asset_fetches_and_decodes_browser_url() {
     let asset = SoundAsset::new("missing/native/audio.wav", WAV_DATA_URL);
 
-    let nyaa = Nyaa::new();
-    let sound = nyaa
+    let soundscape = Soundscape::new();
+    let sound = soundscape
         .create_sound("browser", SoundSource::asset(asset))
         .expect("the browser sound should be created");
     sound
@@ -57,10 +57,10 @@ async fn duration_from_asset_fetches_and_decodes_browser_url() {
 }
 
 #[wasm_bindgen_test]
-async fn nyaa_owns_pending_asset_playback_and_duration() {
+async fn soundscape_owns_pending_asset_playback_and_duration() {
     let asset = SoundAsset::new("missing/native/audio.wav", WAV_DATA_URL);
-    let nyaa = Nyaa::new();
-    let sound = nyaa
+    let soundscape = Soundscape::new();
+    let sound = soundscape
         .create_sound("pending", SoundSource::asset(asset))
         .expect("the pending browser sound should be created");
 
@@ -70,7 +70,7 @@ async fn nyaa_owns_pending_asset_playback_and_duration() {
     assert!(sound.is_loading().unwrap());
 
     loop {
-        let failures = nyaa.update();
+        let failures = soundscape.update();
         assert!(
             failures.is_empty(),
             "browser audio asset should be playable"
@@ -95,8 +95,8 @@ async fn nyaa_owns_pending_asset_playback_and_duration() {
 async fn group_loads_browser_assets_with_shared_configuration() {
     let first = SoundAsset::new("missing/native/first.wav", WAV_DATA_URL);
     let second = SoundAsset::new("missing/native/second.wav", WAV_DATA_URL);
-    let nyaa = Nyaa::new();
-    let group = nyaa.create_group("browser").unwrap();
+    let soundscape = Soundscape::new();
+    let group = soundscape.create_group("browser").unwrap();
     group.set_volume(0.4).unwrap();
     let first = group
         .create_sound("first", SoundSource::asset(first))

@@ -16,7 +16,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::Response;
 
 #[cfg(target_arch = "wasm32")]
-use crate::NyaaError;
+use crate::SoundscapeError;
 
 /// An audio file with locations for native and browser targets.
 ///
@@ -42,15 +42,16 @@ impl Debug for SoundAsset {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn browser_asset_error(error: impl std::fmt::Debug) -> NyaaError {
-    NyaaError::BrowserAsset(format!("{error:?}"))
+fn browser_asset_error(error: impl std::fmt::Debug) -> SoundscapeError {
+    SoundscapeError::BrowserAsset(format!("{error:?}"))
 }
 
 /// Fetches a web resource from the browser and returns its bytes.
 #[cfg(target_arch = "wasm32")]
-pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
-    let window = web_sys::window()
-        .ok_or_else(|| NyaaError::BrowserAsset("browser window is unavailable".to_string()))?;
+pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, SoundscapeError> {
+    let window = web_sys::window().ok_or_else(|| {
+        SoundscapeError::BrowserAsset("browser window is unavailable".to_string())
+    })?;
     let response = JsFuture::from(window.fetch_with_str(url))
         .await
         .map_err(browser_asset_error)?
@@ -58,7 +59,7 @@ pub async fn fetch_browser_asset(url: &str) -> Result<Arc<[u8]>, NyaaError> {
         .map_err(browser_asset_error)?;
 
     if !response.ok() {
-        return Err(NyaaError::BrowserAsset(format!(
+        return Err(SoundscapeError::BrowserAsset(format!(
             "request returned HTTP status {} {}",
             response.status(),
             response.status_text()
@@ -111,7 +112,7 @@ impl SoundAsset {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) async fn load_browser_bytes(&self) -> Result<Arc<[u8]>, NyaaError> {
+    pub(crate) async fn load_browser_bytes(&self) -> Result<Arc<[u8]>, SoundscapeError> {
         if let Some(bytes) = self.cached_browser_bytes() {
             return Ok(bytes);
         }

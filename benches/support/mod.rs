@@ -4,7 +4,7 @@ use std::{hint::black_box, time::Duration};
 
 #[cfg(not(target_arch = "wasm32"))]
 use criterion::Criterion;
-use rodisnyaa::{Nyaa, Output, Sound, SoundSource, format_timestamp};
+use rodisnyaa::{Output, Sound, SoundSource, Soundscape, format_timestamp};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::{Criterion, Instant};
 
@@ -36,7 +36,7 @@ impl ByteStorage {
 }
 
 struct PreparedPlayer {
-    _nyaa: Nyaa,
+    _soundscape: Soundscape,
     sound: Sound,
 }
 
@@ -54,8 +54,9 @@ pub fn benchmark_criterion() -> Criterion {
 }
 
 fn audio_duration() -> Duration {
-    let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-    nyaa.create_sound("duration", SoundSource::static_bytes(AUDIO_BYTES))
+    let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+    soundscape
+        .create_sound("duration", SoundSource::static_bytes(AUDIO_BYTES))
         .expect("the benchmark MP3 duration should be readable")
         .duration()
         .expect("the benchmark sound should remain valid")
@@ -104,8 +105,8 @@ fn prepare_player(
     position: Duration,
     paused: bool,
 ) -> PreparedPlayer {
-    let nyaa = Nyaa::new_with_output(output.clone());
-    let sound = nyaa
+    let soundscape = Soundscape::new_with_output(output.clone());
+    let sound = soundscape
         .create_sound("benchmark", storage.source())
         .expect("the benchmark sound should be created");
     sound.play().expect("the benchmark MP3 should be playable");
@@ -126,7 +127,10 @@ fn prepare_player(
         );
     }
 
-    PreparedPlayer { _nyaa: nyaa, sound }
+    PreparedPlayer {
+        _soundscape: soundscape,
+        sound,
+    }
 }
 
 pub fn bench_play(criterion: &mut Criterion) {
@@ -138,8 +142,8 @@ pub fn bench_play(criterion: &mut Criterion) {
             let name = benchmark_name("play", storage, position);
 
             criterion.bench_function(&name, move |bencher| {
-                let nyaa = Nyaa::new_with_output(output.clone());
-                let sound = nyaa
+                let soundscape = Soundscape::new_with_output(output.clone());
+                let sound = soundscape
                     .create_sound("benchmark", storage.source())
                     .expect("the benchmark sound should be created");
 

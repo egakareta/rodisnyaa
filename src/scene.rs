@@ -12,14 +12,14 @@ use rodio::{
 };
 
 use crate::{
-    Backend, Device, NyaaError, Output, OutputError, PlaybackEvent, PlaybackState, SoundEffects,
-    SoundSource, sound::SoundNode,
+    Backend, Device, Output, OutputError, PlaybackEvent, PlaybackState, SoundEffects, SoundSource,
+    SoundscapeError, sound::SoundNode,
 };
 
 const BUS_CHANNELS: u16 = 2;
 const BUS_SAMPLE_RATE: u32 = 48_000;
 
-/// Identifies a sound within one [`Nyaa`] instance.
+/// Identifies a sound within one [`Soundscape`] instance.
 ///
 /// IDs remain stable when other sounds are inserted or when the sound is moved. An ID becomes
 /// invalid when its sound is removed, and a reused storage slot receives a new generation.
@@ -29,14 +29,14 @@ pub struct SoundId {
     generation: u32,
 }
 
-/// Identifies a sound group within one [`Nyaa`] instance.
+/// Identifies a sound group within one [`Soundscape`] instance.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SoundGroupId {
     index: u32,
     generation: u32,
 }
 
-/// Declares the complete set of sounds that a typed [`Nyaa`] scene must contain.
+/// Declares the complete set of sounds that a typed [`Soundscape`] scene must contain.
 ///
 /// `ALL` must contain every possible value exactly once. Each path is relative to the scene root;
 /// its final component names the sound and preceding components name its initial mixer groups.
@@ -87,29 +87,29 @@ macro_rules! sound_key {
     };
 }
 
-/// A validated constructor for a typed [`Nyaa`] scene.
-pub struct NyaaBuilder<K: SoundKey> {
+/// A validated constructor for a typed [`Soundscape`] scene.
+pub struct SoundscapeBuilder<K: SoundKey> {
     output: Output,
     preferred_backend: Option<Backend>,
     sounds: Vec<(K, SoundSource)>,
 }
 
-/// A playback event emitted by one sound in a [`Nyaa`] instance.
+/// A playback event emitted by one sound in a [`Soundscape`] instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NyaaEvent {
+pub struct SoundscapeEvent {
     /// The sound that emitted the event.
     pub sound: SoundId,
     /// The playback lifecycle transition.
     pub event: PlaybackEvent,
 }
 
-/// An asynchronous sound failure discovered by [`Nyaa::update`].
+/// An asynchronous sound failure discovered by [`Soundscape::update`].
 #[derive(Debug)]
 pub struct SoundError {
     /// The sound whose operation failed.
     pub sound: SoundId,
     /// The loading or playback error.
-    pub error: NyaaError,
+    pub error: SoundscapeError,
 }
 
 struct Slot<T> {
@@ -196,14 +196,14 @@ struct GroupEntry {
     pending_source: Option<Box<dyn Source<Item = f32> + Send>>,
 }
 
-struct NyaaState {
+struct SoundscapeState {
     output: Output,
     preferred_backend: Option<Backend>,
     groups: Arena<GroupEntry>,
     sounds: Arena<SoundNode>,
     required_sounds: HashSet<SoundId>,
     root: SoundGroupId,
-    events: VecDeque<NyaaEvent>,
+    events: VecDeque<SoundscapeEvent>,
     event_capacity: usize,
 }
 
@@ -214,31 +214,31 @@ fn new_bus() -> (Mixer, MixerSource) {
     )
 }
 
-fn validate_name(name: &str) -> Result<(), NyaaError> {
+fn validate_name(name: &str) -> Result<(), SoundscapeError> {
     if name.is_empty() || name.trim() != name || name.contains('/') {
-        Err(NyaaError::InvalidName)
+        Err(SoundscapeError::InvalidName)
     } else {
         Ok(())
     }
 }
 
-fn validate_volume(volume: f32) -> Result<(), NyaaError> {
+fn validate_volume(volume: f32) -> Result<(), SoundscapeError> {
     if volume.is_finite() && volume >= 0.0 {
         Ok(())
     } else {
-        Err(NyaaError::InvalidVolume)
+        Err(SoundscapeError::InvalidVolume)
     }
 }
 
-fn validate_speed(speed: f32) -> Result<(), NyaaError> {
+fn validate_speed(speed: f32) -> Result<(), SoundscapeError> {
     if speed.is_finite() && speed > 0.0 {
         Ok(())
     } else {
-        Err(NyaaError::InvalidSpeed)
+        Err(SoundscapeError::InvalidSpeed)
     }
 }
 
-impl NyaaState {
+impl SoundscapeState {
     fn new(output: Output, preferred_backend: Option<Backend>) -> Self {
         let (root_mixer, root_source) = new_bus();
         let mut groups = Arena::default();
@@ -268,28 +268,28 @@ impl NyaaState {
         state
     }
 
-    fn group(&self, id: SoundGroupId) -> Result<&GroupEntry, NyaaError> {
+    fn group(&self, id: SoundGroupId) -> Result<&GroupEntry, SoundscapeError> {
         self.groups
             .get(id.index, id.generation)
-            .ok_or(NyaaError::InvalidSoundGroupHandle)
+            .ok_or(SoundscapeError::InvalidSoundGroupHandle)
     }
 
-    fn group_mut(&mut self, id: SoundGroupId) -> Result<&mut GroupEntry, NyaaError> {
+    fn group_mut(&mut self, id: SoundGroupId) -> Result<&mut GroupEntry, SoundscapeError> {
         self.groups
             .get_mut(id.index, id.generation)
-            .ok_or(NyaaError::InvalidSoundGroupHandle)
+            .ok_or(SoundscapeError::InvalidSoundGroupHandle)
     }
 
-    fn sound(&self, id: SoundId) -> Result<&SoundNode, NyaaError> {
+    fn sound(&self, id: SoundId) -> Result<&SoundNode, SoundscapeError> {
         self.sounds
             .get(id.index, id.generation)
-            .ok_or(NyaaError::InvalidSoundHandle)
+            .ok_or(SoundscapeError::InvalidSoundHandle)
     }
 
-    fn sound_mut(&mut self, id: SoundId) -> Result<&mut SoundNode, NyaaError> {
+    fn sound_mut(&mut self, id: SoundId) -> Result<&mut SoundNode, SoundscapeError> {
         self.sounds
             .get_mut(id.index, id.generation)
-            .ok_or(NyaaError::InvalidSoundHandle)
+            .ok_or(SoundscapeError::InvalidSoundHandle)
     }
 
     fn attach_group_source(&mut self, id: SoundGroupId, source: MixerSource) {
@@ -474,7 +474,7 @@ impl NyaaState {
         self.child_sound(parent, name)
     }
 
-    fn group_path(&self, id: SoundGroupId) -> Result<String, NyaaError> {
+    fn group_path(&self, id: SoundGroupId) -> Result<String, SoundscapeError> {
         self.group(id)?;
         if id == self.root {
             return Ok(String::new());
@@ -484,7 +484,9 @@ impl NyaaState {
         while current != self.root {
             let group = self.group(current)?;
             names.push(group.name.as_str());
-            current = group.parent.ok_or(NyaaError::InvalidSoundGroupHandle)?;
+            current = group
+                .parent
+                .ok_or(SoundscapeError::InvalidSoundGroupHandle)?;
         }
         names.reverse();
         Ok(names.join("/"))
@@ -520,7 +522,7 @@ impl NyaaState {
         }
     }
 
-    fn group_effective_volume(&self, mut group: SoundGroupId) -> Result<f32, NyaaError> {
+    fn group_effective_volume(&self, mut group: SoundGroupId) -> Result<f32, SoundscapeError> {
         let mut volume = 1.0;
         loop {
             let entry = self.group(group)?;
@@ -585,7 +587,7 @@ impl NyaaState {
                 if self.events.len() >= self.event_capacity {
                     self.events.pop_front();
                 }
-                self.events.push_back(NyaaEvent { sound: id, event });
+                self.events.push_back(SoundscapeEvent { sound: id, event });
             }
         }
     }
@@ -608,23 +610,23 @@ impl NyaaState {
         self.collect_sound_events(id);
     }
 
-    fn remove_sound(&mut self, id: SoundId) -> Result<(), NyaaError> {
+    fn remove_sound(&mut self, id: SoundId) -> Result<(), SoundscapeError> {
         if self.required_sounds.contains(&id) {
-            return Err(NyaaError::RequiredSound);
+            return Err(SoundscapeError::RequiredSound);
         }
         let mut sound = self
             .sounds
             .remove(id.index, id.generation)
-            .ok_or(NyaaError::InvalidSoundHandle)?;
+            .ok_or(SoundscapeError::InvalidSoundHandle)?;
         sound.cancel_pending_playback();
         sound.stop();
         Ok(())
     }
 
-    fn remove_group(&mut self, id: SoundGroupId) -> Result<(), NyaaError> {
+    fn remove_group(&mut self, id: SoundGroupId) -> Result<(), SoundscapeError> {
         self.group(id)?;
         if id == self.root {
-            return Err(NyaaError::RootSoundGroup);
+            return Err(SoundscapeError::RootSoundGroup);
         }
 
         let sounds = self.sounds_beneath(id);
@@ -632,7 +634,7 @@ impl NyaaState {
             .iter()
             .any(|sound| self.required_sounds.contains(sound))
         {
-            return Err(NyaaError::RequiredSound);
+            return Err(SoundscapeError::RequiredSound);
         }
 
         for sound in sounds {
@@ -646,7 +648,7 @@ impl NyaaState {
             let mut entry = self
                 .groups
                 .remove(group.index, group.generation)
-                .ok_or(NyaaError::InvalidSoundGroupHandle)?;
+                .ok_or(SoundscapeError::InvalidSoundGroupHandle)?;
             if let Some(player) = entry.bus_player.as_mut() {
                 player.stop();
             }
@@ -657,21 +659,21 @@ impl NyaaState {
 
 /// The root owner of an application's audio scene.
 ///
-/// A `Nyaa` owns one output, every [`Sound`], and a recursive hierarchy of [`SoundGroup`] mixer
+/// A `Soundscape` owns one output, every [`Sound`], and a recursive hierarchy of [`SoundGroup`] mixer
 /// buses. Sounds and groups are lightweight handles; applications normally need to store only
 /// this root value.
-pub struct Nyaa<K = ()> {
-    inner: Arc<Mutex<NyaaState>>,
+pub struct Soundscape<K = ()> {
+    inner: Arc<Mutex<SoundscapeState>>,
     required_sounds: Vec<(K, SoundId)>,
 }
 
-impl Default for Nyaa<()> {
+impl Default for Soundscape<()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Nyaa<()> {
+impl Soundscape<()> {
     /// Creates an empty audio scene using the default output.
     pub fn new() -> Self {
         Self::from_output(Output::new(), None)
@@ -694,38 +696,38 @@ impl Nyaa<()> {
 
     fn from_output(output: Output, preferred_backend: Option<Backend>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(NyaaState::new(output, preferred_backend))),
+            inner: Arc::new(Mutex::new(SoundscapeState::new(output, preferred_backend))),
             required_sounds: Vec::new(),
         }
     }
 }
 
-impl<K> Nyaa<K> {
+impl<K> Soundscape<K> {
     fn sound_handle(&self, id: SoundId) -> Sound {
         Sound {
-            nyaa: Arc::downgrade(&self.inner),
+            soundscape: Arc::downgrade(&self.inner),
             id,
         }
     }
 
     fn group_handle(&self, id: SoundGroupId) -> SoundGroup {
         SoundGroup {
-            nyaa: Arc::downgrade(&self.inner),
+            soundscape: Arc::downgrade(&self.inner),
             id,
         }
     }
 
     fn create_group_in(
-        inner: &Arc<Mutex<NyaaState>>,
+        inner: &Arc<Mutex<SoundscapeState>>,
         parent: SoundGroupId,
         name: impl Into<String>,
-    ) -> Result<SoundGroup, NyaaError> {
+    ) -> Result<SoundGroup, SoundscapeError> {
         let name = name.into();
         validate_name(&name)?;
         let mut state = inner.lock().unwrap();
         state.group(parent)?;
         if state.has_child_name(parent, &name, None, None) {
-            return Err(NyaaError::DuplicateName(name));
+            return Err(SoundscapeError::DuplicateName(name));
         }
 
         let (group_mixer, source) = new_bus();
@@ -743,24 +745,24 @@ impl<K> Nyaa<K> {
         let id = SoundGroupId { index, generation };
         state.attach_group_source(id, source);
         Ok(SoundGroup {
-            nyaa: Arc::downgrade(inner),
+            soundscape: Arc::downgrade(inner),
             id,
         })
     }
 
     fn create_sound_in(
-        inner: &Arc<Mutex<NyaaState>>,
+        inner: &Arc<Mutex<SoundscapeState>>,
         group: SoundGroupId,
         name: impl Into<String>,
         source: impl Into<SoundSource>,
-    ) -> Result<Sound, NyaaError> {
+    ) -> Result<Sound, SoundscapeError> {
         let name = name.into();
         validate_name(&name)?;
         let source = source.into();
         let mut state = inner.lock().unwrap();
         state.group(group)?;
         if state.has_child_name(group, &name, None, None) {
-            return Err(NyaaError::DuplicateName(name));
+            return Err(SoundscapeError::DuplicateName(name));
         }
 
         let group_mixer = state.group(group)?.mixer.clone();
@@ -768,7 +770,7 @@ impl<K> Nyaa<K> {
         let (index, generation) = state.sounds.insert(sound);
         let id = SoundId { index, generation };
         Ok(Sound {
-            nyaa: Arc::downgrade(inner),
+            soundscape: Arc::downgrade(inner),
             id,
         })
     }
@@ -780,7 +782,7 @@ impl<K> Nyaa<K> {
     }
 
     /// Creates a mixer group directly beneath the root.
-    pub fn create_group(&self, name: impl Into<String>) -> Result<SoundGroup, NyaaError> {
+    pub fn create_group(&self, name: impl Into<String>) -> Result<SoundGroup, SoundscapeError> {
         let root = self.inner.lock().unwrap().root;
         Self::create_group_in(&self.inner, root, name)
     }
@@ -790,7 +792,7 @@ impl<K> Nyaa<K> {
         &self,
         name: impl Into<String>,
         source: impl Into<SoundSource>,
-    ) -> Result<Sound, NyaaError> {
+    ) -> Result<Sound, SoundscapeError> {
         let root = self.inner.lock().unwrap().root;
         Self::create_sound_in(&self.inner, root, name, source)
     }
@@ -856,21 +858,21 @@ impl<K> Nyaa<K> {
     }
 
     /// Removes a sound and invalidates all of its handles.
-    pub fn remove_sound(&self, sound: &Sound) -> Result<(), NyaaError> {
-        sound.ensure_same_nyaa(&self.inner)?;
+    pub fn remove_sound(&self, sound: &Sound) -> Result<(), SoundscapeError> {
+        sound.ensure_same_soundscape(&self.inner)?;
         self.inner.lock().unwrap().remove_sound(sound.id)
     }
 
     /// Recursively removes a group, its child groups, and all descendant sounds.
-    pub fn remove_group(&self, group: &SoundGroup) -> Result<(), NyaaError> {
-        group.ensure_same_nyaa(&self.inner)?;
+    pub fn remove_group(&self, group: &SoundGroup) -> Result<(), SoundscapeError> {
+        group.ensure_same_soundscape(&self.inner)?;
         self.inner.lock().unwrap().remove_group(group.id)
     }
 
     /// Advances asynchronous loads and discovers natural playback completion.
     ///
     /// The returned failures are asynchronous errors whose initiating [`Sound::play`] call had
-    /// already returned. Lifecycle transitions are also available through [`Nyaa::poll_event`].
+    /// already returned. Lifecycle transitions are also available through [`Soundscape::poll_event`].
     pub fn update(&self) -> Vec<SoundError> {
         let mut state = self.inner.lock().unwrap();
         let ids = state
@@ -907,7 +909,7 @@ impl<K> Nyaa<K> {
     }
 
     /// Returns the next global playback event.
-    pub fn poll_event(&self) -> Option<NyaaEvent> {
+    pub fn poll_event(&self) -> Option<SoundscapeEvent> {
         let mut state = self.inner.lock().unwrap();
         let ids = state
             .sounds
@@ -931,7 +933,7 @@ impl<K> Nyaa<K> {
     }
 
     /// Sets the master volume multiplier.
-    pub fn set_volume(&self, volume: f32) -> Result<(), NyaaError> {
+    pub fn set_volume(&self, volume: f32) -> Result<(), SoundscapeError> {
         self.root_group().set_volume(volume)
     }
 
@@ -957,7 +959,7 @@ impl<K> Nyaa<K> {
     }
 
     /// Replaces the root post-mix effect chain.
-    pub fn set_effects(&self, effects: SoundEffects) -> Result<(), NyaaError> {
+    pub fn set_effects(&self, effects: SoundEffects) -> Result<(), SoundscapeError> {
         self.root_group().set_effects(effects)
     }
 
@@ -983,7 +985,7 @@ impl<K> Nyaa<K> {
     }
 
     /// Stops every sound and resets their positions.
-    pub fn stop_all(&self) -> Result<(), NyaaError> {
+    pub fn stop_all(&self) -> Result<(), SoundscapeError> {
         self.root_group().stop_all()
     }
 
@@ -1068,20 +1070,20 @@ impl<K> Nyaa<K> {
     }
 }
 
-impl<K: SoundKey> Nyaa<K> {
+impl<K: SoundKey> Soundscape<K> {
     /// Starts building a typed scene using the default output.
-    pub fn builder() -> NyaaBuilder<K> {
-        NyaaBuilder::new()
+    pub fn builder() -> SoundscapeBuilder<K> {
+        SoundscapeBuilder::new()
     }
 
     /// Starts building a typed scene connected to an existing output.
-    pub fn builder_with_output(output: Output) -> NyaaBuilder<K> {
-        NyaaBuilder::with_output(output)
+    pub fn builder_with_output(output: Output) -> SoundscapeBuilder<K> {
+        SoundscapeBuilder::with_output(output)
     }
 
     /// Returns the sound identified by a required key.
     ///
-    /// Unlike [`Self::find_sound`], this is total because [`NyaaBuilder::build`] validates that
+    /// Unlike [`Self::find_sound`], this is total because [`SoundscapeBuilder::build`] validates that
     /// every key exists and required sounds cannot be removed.
     pub fn sound(&self, key: K) -> Sound {
         let id = self
@@ -1093,13 +1095,13 @@ impl<K: SoundKey> Nyaa<K> {
     }
 }
 
-impl<K: SoundKey> Default for NyaaBuilder<K> {
+impl<K: SoundKey> Default for SoundscapeBuilder<K> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: SoundKey> NyaaBuilder<K> {
+impl<K: SoundKey> SoundscapeBuilder<K> {
     /// Creates a typed scene builder using the default output.
     pub fn new() -> Self {
         Self {
@@ -1146,7 +1148,7 @@ impl<K: SoundKey> NyaaBuilder<K> {
     /// Constructs the scene while filling every unregistered key with an empty sound.
     ///
     /// Explicit sources and placeholders already registered on this builder are preserved.
-    pub fn placeholders(mut self) -> Result<Nyaa<K>, NyaaError> {
+    pub fn placeholders(mut self) -> Result<Soundscape<K>, SoundscapeError> {
         for &key in K::ALL {
             if !self.sounds.iter().any(|(candidate, _)| *candidate == key) {
                 self.sounds.push((key, SoundSource::Empty));
@@ -1156,25 +1158,25 @@ impl<K: SoundKey> NyaaBuilder<K> {
     }
 
     /// Validates the schema and constructs a scene containing every required sound.
-    pub fn build(mut self) -> Result<Nyaa<K>, NyaaError> {
-        let dynamic = Nyaa::from_output(self.output, self.preferred_backend);
+    pub fn build(mut self) -> Result<Soundscape<K>, SoundscapeError> {
+        let dynamic = Soundscape::from_output(self.output, self.preferred_backend);
         let mut required_sounds = Vec::with_capacity(K::ALL.len());
         let mut paths = HashSet::with_capacity(K::ALL.len());
 
         for &key in K::ALL {
             let path = key.path();
             if path.starts_with('/') {
-                return Err(NyaaError::InvalidName);
+                return Err(SoundscapeError::InvalidName);
             }
             if !paths.insert(path) {
-                return Err(NyaaError::DuplicateRequiredSoundPath(path));
+                return Err(SoundscapeError::DuplicateRequiredSoundPath(path));
             }
             let Some(index) = self
                 .sounds
                 .iter()
                 .position(|(candidate, _)| *candidate == key)
             else {
-                return Err(NyaaError::MissingRequiredSound(path));
+                return Err(SoundscapeError::MissingRequiredSound(path));
             };
             let (_, source) = self.sounds.swap_remove(index);
             let (groups, name) = path.rsplit_once('/').unwrap_or(("", path));
@@ -1196,7 +1198,7 @@ impl<K: SoundKey> NyaaBuilder<K> {
         }
 
         if let Some((key, _)) = self.sounds.first() {
-            return Err(NyaaError::UnknownRequiredSound(key.path()));
+            return Err(SoundscapeError::UnknownRequiredSound(key.path()));
         }
 
         {
@@ -1206,17 +1208,17 @@ impl<K: SoundKey> NyaaBuilder<K> {
                 .extend(required_sounds.iter().map(|(_, id)| *id));
         }
 
-        Ok(Nyaa {
+        Ok(Soundscape {
             inner: dynamic.inner,
             required_sounds,
         })
     }
 }
 
-/// A playable sound owned by a [`Nyaa`] audio scene.
+/// A playable sound owned by a [`Soundscape`] audio scene.
 #[derive(Clone)]
 pub struct Sound {
-    nyaa: Weak<Mutex<NyaaState>>,
+    soundscape: Weak<Mutex<SoundscapeState>>,
     id: SoundId,
 }
 
@@ -1230,15 +1232,20 @@ impl fmt::Debug for Sound {
 }
 
 impl Sound {
-    fn state(&self) -> Result<Arc<Mutex<NyaaState>>, NyaaError> {
-        self.nyaa.upgrade().ok_or(NyaaError::InvalidSoundHandle)
+    fn state(&self) -> Result<Arc<Mutex<SoundscapeState>>, SoundscapeError> {
+        self.soundscape
+            .upgrade()
+            .ok_or(SoundscapeError::InvalidSoundHandle)
     }
 
-    fn ensure_same_nyaa(&self, nyaa: &Arc<Mutex<NyaaState>>) -> Result<(), NyaaError> {
-        if Weak::ptr_eq(&self.nyaa, &Arc::downgrade(nyaa)) {
+    fn ensure_same_soundscape(
+        &self,
+        soundscape: &Arc<Mutex<SoundscapeState>>,
+    ) -> Result<(), SoundscapeError> {
+        if Weak::ptr_eq(&self.soundscape, &Arc::downgrade(soundscape)) {
             Ok(())
         } else {
-            Err(NyaaError::DifferentNyaa)
+            Err(SoundscapeError::DifferentSoundscape)
         }
     }
 
@@ -1248,12 +1255,12 @@ impl Sound {
     }
 
     /// Returns this sound's name.
-    pub fn name(&self) -> Result<String, NyaaError> {
+    pub fn name(&self) -> Result<String, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.name.clone())
     }
 
     /// Returns this sound's slash-separated path from the root.
-    pub fn path(&self) -> Result<String, NyaaError> {
+    pub fn path(&self) -> Result<String, SoundscapeError> {
         let state = self.state()?;
         let state = state.lock().unwrap();
         let sound = state.sound(self.id)?;
@@ -1266,24 +1273,24 @@ impl Sound {
     }
 
     /// Returns the mixer group to which this sound is assigned.
-    pub fn group(&self) -> Result<SoundGroup, NyaaError> {
+    pub fn group(&self) -> Result<SoundGroup, SoundscapeError> {
         let state = self.state()?;
         let group = state.lock().unwrap().sound(self.id)?.group;
         Ok(SoundGroup {
-            nyaa: Arc::downgrade(&state),
+            soundscape: Arc::downgrade(&state),
             id: group,
         })
     }
 
     /// Moves this sound to another mixer group while preserving playback.
-    pub fn set_group(&self, group: &SoundGroup) -> Result<(), NyaaError> {
+    pub fn set_group(&self, group: &SoundGroup) -> Result<(), SoundscapeError> {
         let state = self.state()?;
-        group.ensure_same_nyaa(&state)?;
+        group.ensure_same_soundscape(&state)?;
         let mut state = state.lock().unwrap();
         state.group(group.id)?;
         let name = state.sound(self.id)?.name.clone();
         if state.has_child_name(group.id, &name, Some(self.id), None) {
-            return Err(NyaaError::DuplicateName(name));
+            return Err(SoundscapeError::DuplicateName(name));
         }
         if state.sound(self.id)?.group == group.id {
             return Ok(());
@@ -1299,19 +1306,19 @@ impl Sound {
     }
 
     /// Returns a clone of the encoded source descriptor.
-    pub fn source(&self) -> Result<SoundSource, NyaaError> {
+    pub fn source(&self) -> Result<SoundSource, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.source.clone())
     }
 
     /// Returns the byte length of this sound's source.
-    pub fn len(&self) -> Result<Option<u64>, NyaaError> {
+    pub fn len(&self) -> Result<Option<u64>, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.source.len())
     }
 
     /// Replaces the encoded source without starting playback.
     ///
     /// Setting the same underlying resource again is a no-op.
-    pub fn set_source(&self, source: impl Into<SoundSource>) -> Result<(), NyaaError> {
+    pub fn set_source(&self, source: impl Into<SoundSource>) -> Result<(), SoundscapeError> {
         let source = source.into();
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1322,7 +1329,7 @@ impl Sound {
     }
 
     /// Loads and decodes the source without starting playback.
-    pub async fn load(&self) -> Result<(), NyaaError> {
+    pub async fn load(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
 
         #[cfg(target_arch = "wasm32")]
@@ -1337,7 +1344,7 @@ impl Sound {
                 let mut state = state.lock().unwrap();
                 let sound = state.sound_mut(self.id)?;
                 if sound.source_revision != revision {
-                    return Err(NyaaError::SoundSourceChanged);
+                    return Err(SoundscapeError::SoundSourceChanged);
                 }
                 sound.cancel_pending_playback();
                 sound.load_resolved_bytes(bytes)?;
@@ -1359,16 +1366,16 @@ impl Sound {
     }
 
     /// Ensures this sound is playing, resuming paused playback when possible.
-    pub fn play(&self) -> Result<(), NyaaError> {
+    pub fn play(&self) -> Result<(), SoundscapeError> {
         self.play_from_current(false)
     }
 
     /// Starts this sound again from the beginning.
-    pub fn replay(&self) -> Result<(), NyaaError> {
+    pub fn replay(&self) -> Result<(), SoundscapeError> {
         self.play_from_current(true)
     }
 
-    fn play_from_current(&self, restart: bool) -> Result<(), NyaaError> {
+    fn play_from_current(&self, restart: bool) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.ensure_output()?;
@@ -1381,7 +1388,7 @@ impl Sound {
 
         if !sound.source_loaded {
             match &sound.source {
-                SoundSource::Empty => return Err(NyaaError::NoAudioSource),
+                SoundSource::Empty => return Err(SoundscapeError::NoAudioSource),
                 SoundSource::Asset(asset) => {
                     let asset = asset.clone();
                     sound.start_asset_playback(&asset)?;
@@ -1417,7 +1424,7 @@ impl Sound {
     /// Pauses this sound, keeping its current position.
     ///
     /// Pauses regardless of its group pause state, if any.
-    pub fn pause(&self) -> Result<(), NyaaError> {
+    pub fn pause(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
@@ -1428,7 +1435,7 @@ impl Sound {
     }
 
     /// Resumes this sound unless one of its ancestor groups, if any, remains paused.
-    pub fn resume(&self) -> Result<(), NyaaError> {
+    pub fn resume(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let group_paused = state.group_is_paused(state.sound(self.id)?.group);
@@ -1442,7 +1449,7 @@ impl Sound {
     }
 
     /// Stops this sound and resets its position, retaining its source.
-    pub fn stop(&self) -> Result<(), NyaaError> {
+    pub fn stop(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
@@ -1456,7 +1463,7 @@ impl Sound {
     }
 
     /// Seeks within this sound without changing its intended pause state.
-    pub fn try_seek(&self, position: Duration) -> Result<(), NyaaError> {
+    pub fn try_seek(&self, position: Duration) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.sound_mut(self.id)?.try_seek(position)?;
@@ -1468,7 +1475,7 @@ impl Sound {
     ///
     /// Similar to `try_seek(Duration::from_secs_f64(position_secs))`,
     /// but can error for invalid positions.
-    pub fn try_seek_secs(&self, position_secs: f64) -> Result<(), NyaaError> {
+    pub fn try_seek_secs(&self, position_secs: f64) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.sound_mut(self.id)?.try_seek_secs(position_secs)?;
@@ -1477,7 +1484,7 @@ impl Sound {
     }
 
     /// Returns the current playback state.
-    pub fn playback_state(&self) -> Result<PlaybackState, NyaaError> {
+    pub fn playback_state(&self) -> Result<PlaybackState, SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let playback_state = state.sound_mut(self.id)?.state();
@@ -1486,7 +1493,7 @@ impl Sound {
     }
 
     /// Returns the next event for this sound.
-    pub fn poll_event(&self) -> Result<Option<PlaybackEvent>, NyaaError> {
+    pub fn poll_event(&self) -> Result<Option<PlaybackEvent>, SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.sound_mut(self.id)?.state();
@@ -1495,7 +1502,7 @@ impl Sound {
     }
 
     /// Sets the number of events retained by this sound handle's event stream.
-    pub fn set_event_capacity(&self, capacity: usize) -> Result<(), NyaaError> {
+    pub fn set_event_capacity(&self, capacity: usize) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let sound = state.sound_mut(self.id)?;
@@ -1504,27 +1511,27 @@ impl Sound {
     }
 
     /// Returns whether this sound is currently [`PlaybackState::Loading`].
-    pub fn is_loading(&self) -> Result<bool, NyaaError> {
+    pub fn is_loading(&self) -> Result<bool, SoundscapeError> {
         Ok(self.playback_state()? == PlaybackState::Loading)
     }
 
     /// Returns whether this sound is currently [`PlaybackState::Playing`].
-    pub fn is_playing(&self) -> Result<bool, NyaaError> {
+    pub fn is_playing(&self) -> Result<bool, SoundscapeError> {
         Ok(self.playback_state()? == PlaybackState::Playing)
     }
 
     /// Returns whether this sound is currently [`PlaybackState::Paused`].
-    pub fn is_paused(&self) -> Result<bool, NyaaError> {
+    pub fn is_paused(&self) -> Result<bool, SoundscapeError> {
         Ok(self.playback_state()? == PlaybackState::Paused)
     }
 
     /// Returns the current playback position.
-    pub fn position(&self) -> Result<Duration, NyaaError> {
+    pub fn position(&self) -> Result<Duration, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.position())
     }
 
     /// Returns the current playback position formatted as `H:MM:SS` or `M:SS`.
-    pub fn position_formatted(&self) -> Result<String, NyaaError> {
+    pub fn position_formatted(&self) -> Result<String, SoundscapeError> {
         Ok(self
             .state()?
             .lock()
@@ -1534,12 +1541,12 @@ impl Sound {
     }
 
     /// Returns the source duration when known.
-    pub fn duration(&self) -> Result<Option<Duration>, NyaaError> {
+    pub fn duration(&self) -> Result<Option<Duration>, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.duration())
     }
 
     /// Returns the source duration formatted as `H:MM:SS` or `M:SS`.
-    pub fn duration_formatted(&self) -> Result<String, NyaaError> {
+    pub fn duration_formatted(&self) -> Result<String, SoundscapeError> {
         Ok(self
             .state()?
             .lock()
@@ -1551,7 +1558,7 @@ impl Sound {
     /// Returns the current position clamped to the known duration.
     ///
     /// This is useful for user input.
-    pub fn clamped_position(&self) -> Result<Duration, NyaaError> {
+    pub fn clamped_position(&self) -> Result<Duration, SoundscapeError> {
         Ok(self
             .state()?
             .lock()
@@ -1563,12 +1570,12 @@ impl Sound {
     /// Attempts to produce a valid range suitable for a seek slider, even if the duration is unknown.
     ///
     /// Will return `0.0..=1.0` if the duration is unknown, otherwise returns `0.0..=duration`.
-    pub fn seek_range(&self) -> Result<std::ops::RangeInclusive<f64>, NyaaError> {
+    pub fn seek_range(&self) -> Result<std::ops::RangeInclusive<f64>, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.seek_range())
     }
 
     /// Sets this sound's volume before group and master multipliers.
-    pub fn set_volume(&self, volume: f32) -> Result<(), NyaaError> {
+    pub fn set_volume(&self, volume: f32) -> Result<(), SoundscapeError> {
         validate_volume(volume)?;
         self.state()?
             .lock()
@@ -1579,12 +1586,12 @@ impl Sound {
     }
 
     /// Returns this sound's volume before group and master multipliers.
-    pub fn local_volume(&self) -> Result<f32, NyaaError> {
+    pub fn local_volume(&self) -> Result<f32, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.volume())
     }
 
     /// Returns this sound's volume after all group and master multipliers.
-    pub fn effective_volume(&self) -> Result<f32, NyaaError> {
+    pub fn effective_volume(&self) -> Result<f32, SoundscapeError> {
         let state = self.state()?;
         let state = state.lock().unwrap();
         let sound = state.sound(self.id)?;
@@ -1592,7 +1599,7 @@ impl Sound {
     }
 
     /// Sets this sound's playback speed.
-    pub fn set_speed(&self, speed: f32) -> Result<(), NyaaError> {
+    pub fn set_speed(&self, speed: f32) -> Result<(), SoundscapeError> {
         validate_speed(speed)?;
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1602,12 +1609,12 @@ impl Sound {
     }
 
     /// Returns this sound's playback speed.
-    pub fn speed(&self) -> Result<f32, NyaaError> {
+    pub fn speed(&self) -> Result<f32, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.speed())
     }
 
     /// Enables or disables pitch preservation for this sound.
-    pub fn set_preserve_pitch(&self, preserve_pitch: bool) -> Result<(), NyaaError> {
+    pub fn set_preserve_pitch(&self, preserve_pitch: bool) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state
@@ -1618,7 +1625,7 @@ impl Sound {
     }
 
     /// Returns whether this sound preserves pitch while changing speed.
-    pub fn preserves_pitch(&self) -> Result<bool, NyaaError> {
+    pub fn preserves_pitch(&self) -> Result<bool, SoundscapeError> {
         Ok(self
             .state()?
             .lock()
@@ -1628,7 +1635,7 @@ impl Sound {
     }
 
     /// Sets this sound's pre-mix effect chain.
-    pub fn set_effects(&self, effects: SoundEffects) -> Result<(), NyaaError> {
+    pub fn set_effects(&self, effects: SoundEffects) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.sound_mut(self.id)?.set_effects(effects)?;
@@ -1637,12 +1644,12 @@ impl Sound {
     }
 
     /// Returns this sound's pre-mix effect chain.
-    pub fn effects(&self) -> Result<SoundEffects, NyaaError> {
+    pub fn effects(&self) -> Result<SoundEffects, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.effects())
     }
 
     /// Enables or disables looping for this sound.
-    pub fn set_looping(&self, looping: bool) -> Result<(), NyaaError> {
+    pub fn set_looping(&self, looping: bool) -> Result<(), SoundscapeError> {
         self.state()?
             .lock()
             .unwrap()
@@ -1652,12 +1659,12 @@ impl Sound {
     }
 
     /// Returns whether this sound loops.
-    pub fn is_looping(&self) -> Result<bool, NyaaError> {
+    pub fn is_looping(&self) -> Result<bool, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.is_looping())
     }
 
     /// Sets this sound's playback and looping range.
-    pub fn set_loop_range(&self, range: Range<Duration>) -> Result<(), NyaaError> {
+    pub fn set_loop_range(&self, range: Range<Duration>) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.sound_mut(self.id)?.set_loop_range(range)?;
@@ -1666,12 +1673,12 @@ impl Sound {
     }
 
     /// Returns this sound's playback and looping range.
-    pub fn loop_range(&self) -> Result<Option<Range<Duration>>, NyaaError> {
+    pub fn loop_range(&self) -> Result<Option<Range<Duration>>, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().sound(self.id)?.loop_range())
     }
 
     /// Removes this sound's playback and looping range.
-    pub fn clear_loop_range(&self) -> Result<(), NyaaError> {
+    pub fn clear_loop_range(&self) -> Result<(), SoundscapeError> {
         self.state()?
             .lock()
             .unwrap()
@@ -1681,7 +1688,7 @@ impl Sound {
     }
 
     /// Blocks the current thread until this sound reaches the end.
-    pub fn wait_until_end(&self) -> Result<(), NyaaError> {
+    pub fn wait_until_end(&self) -> Result<(), SoundscapeError> {
         self.state()?
             .lock()
             .unwrap()
@@ -1690,16 +1697,16 @@ impl Sound {
         Ok(())
     }
 
-    /// Removes this sound from its owning [`Nyaa`].
-    pub fn remove(self) -> Result<(), NyaaError> {
+    /// Removes this sound from its owning [`Soundscape`].
+    pub fn remove(self) -> Result<(), SoundscapeError> {
         self.state()?.lock().unwrap().remove_sound(self.id)
     }
 }
 
-/// A recursive mixer group owned by a [`Nyaa`] audio scene.
+/// A recursive mixer group owned by a [`Soundscape`] audio scene.
 #[derive(Clone)]
 pub struct SoundGroup {
-    nyaa: Weak<Mutex<NyaaState>>,
+    soundscape: Weak<Mutex<SoundscapeState>>,
     id: SoundGroupId,
 }
 
@@ -1713,17 +1720,20 @@ impl fmt::Debug for SoundGroup {
 }
 
 impl SoundGroup {
-    fn state(&self) -> Result<Arc<Mutex<NyaaState>>, NyaaError> {
-        self.nyaa
+    fn state(&self) -> Result<Arc<Mutex<SoundscapeState>>, SoundscapeError> {
+        self.soundscape
             .upgrade()
-            .ok_or(NyaaError::InvalidSoundGroupHandle)
+            .ok_or(SoundscapeError::InvalidSoundGroupHandle)
     }
 
-    fn ensure_same_nyaa(&self, nyaa: &Arc<Mutex<NyaaState>>) -> Result<(), NyaaError> {
-        if Weak::ptr_eq(&self.nyaa, &Arc::downgrade(nyaa)) {
+    fn ensure_same_soundscape(
+        &self,
+        soundscape: &Arc<Mutex<SoundscapeState>>,
+    ) -> Result<(), SoundscapeError> {
+        if Weak::ptr_eq(&self.soundscape, &Arc::downgrade(soundscape)) {
             Ok(())
         } else {
-            Err(NyaaError::DifferentNyaa)
+            Err(SoundscapeError::DifferentSoundscape)
         }
     }
 
@@ -1733,41 +1743,41 @@ impl SoundGroup {
     }
 
     /// Returns this group's name, or an empty string for the implicit root.
-    pub fn name(&self) -> Result<String, NyaaError> {
+    pub fn name(&self) -> Result<String, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().group(self.id)?.name.clone())
     }
 
     /// Returns this group's slash-separated path from the root.
-    pub fn path(&self) -> Result<String, NyaaError> {
+    pub fn path(&self) -> Result<String, SoundscapeError> {
         self.state()?.lock().unwrap().group_path(self.id)
     }
 
     /// Returns this group's parent, or `None` for the root.
-    pub fn parent(&self) -> Result<Option<SoundGroup>, NyaaError> {
+    pub fn parent(&self) -> Result<Option<SoundGroup>, SoundscapeError> {
         let state = self.state()?;
         let parent = state.lock().unwrap().group(self.id)?.parent;
         Ok(parent.map(|id| SoundGroup {
-            nyaa: Arc::downgrade(&state),
+            soundscape: Arc::downgrade(&state),
             id,
         }))
     }
 
     /// Moves this group beneath another group and rebuilds its mixer route.
-    pub fn set_parent(&self, parent: &SoundGroup) -> Result<(), NyaaError> {
+    pub fn set_parent(&self, parent: &SoundGroup) -> Result<(), SoundscapeError> {
         let state = self.state()?;
-        parent.ensure_same_nyaa(&state)?;
+        parent.ensure_same_soundscape(&state)?;
         let mut state = state.lock().unwrap();
         state.group(self.id)?;
         state.group(parent.id)?;
         if self.id == state.root {
-            return Err(NyaaError::RootSoundGroup);
+            return Err(SoundscapeError::RootSoundGroup);
         }
         if state.group_is_beneath(parent.id, self.id) {
-            return Err(NyaaError::SoundGroupCycle);
+            return Err(SoundscapeError::SoundGroupCycle);
         }
         let name = state.group(self.id)?.name.clone();
         if state.has_child_name(parent.id, &name, None, Some(self.id)) {
-            return Err(NyaaError::DuplicateName(name));
+            return Err(SoundscapeError::DuplicateName(name));
         }
         if state.group(self.id)?.parent == Some(parent.id) {
             return Ok(());
@@ -1782,9 +1792,9 @@ impl SoundGroup {
     }
 
     /// Creates a child mixer group.
-    pub fn create_group(&self, name: impl Into<String>) -> Result<SoundGroup, NyaaError> {
+    pub fn create_group(&self, name: impl Into<String>) -> Result<SoundGroup, SoundscapeError> {
         let state = self.state()?;
-        Nyaa::<()>::create_group_in(&state, self.id, name)
+        Soundscape::<()>::create_group_in(&state, self.id, name)
     }
 
     /// Creates a sound assigned to this mixer group.
@@ -1792,33 +1802,33 @@ impl SoundGroup {
         &self,
         name: impl Into<String>,
         source: impl Into<SoundSource>,
-    ) -> Result<Sound, NyaaError> {
+    ) -> Result<Sound, SoundscapeError> {
         let state = self.state()?;
-        Nyaa::<()>::create_sound_in(&state, self.id, name, source)
+        Soundscape::<()>::create_sound_in(&state, self.id, name, source)
     }
 
     /// Finds a descendant sound by a path relative to this group.
     pub fn sound(&self, path: &str) -> Option<Sound> {
-        let state = self.nyaa.upgrade()?;
+        let state = self.soundscape.upgrade()?;
         let id = state.lock().ok()?.resolve_sound(self.id, path)?;
         Some(Sound {
-            nyaa: Arc::downgrade(&state),
+            soundscape: Arc::downgrade(&state),
             id,
         })
     }
 
     /// Finds a descendant group by a path relative to this group.
     pub fn group(&self, path: &str) -> Option<SoundGroup> {
-        let state = self.nyaa.upgrade()?;
+        let state = self.soundscape.upgrade()?;
         let id = state.lock().ok()?.resolve_group(self.id, path)?;
         Some(SoundGroup {
-            nyaa: Arc::downgrade(&state),
+            soundscape: Arc::downgrade(&state),
             id,
         })
     }
 
     /// Returns handles to this group's immediate sounds.
-    pub fn sounds(&self) -> Result<Vec<Sound>, NyaaError> {
+    pub fn sounds(&self) -> Result<Vec<Sound>, SoundscapeError> {
         let state = self.state()?;
         let guard = state.lock().unwrap();
         guard.group(self.id)?;
@@ -1832,7 +1842,7 @@ impl SoundGroup {
                     .sound(id)
                     .is_ok_and(|sound| sound.group == self.id)
                     .then_some(Sound {
-                        nyaa: Arc::downgrade(&state),
+                        soundscape: Arc::downgrade(&state),
                         id,
                     })
             })
@@ -1840,7 +1850,7 @@ impl SoundGroup {
     }
 
     /// Returns handles to this group's immediate child groups.
-    pub fn groups(&self) -> Result<Vec<SoundGroup>, NyaaError> {
+    pub fn groups(&self) -> Result<Vec<SoundGroup>, SoundscapeError> {
         let state = self.state()?;
         let guard = state.lock().unwrap();
         guard.group(self.id)?;
@@ -1854,7 +1864,7 @@ impl SoundGroup {
                     .group(id)
                     .is_ok_and(|group| group.parent == Some(self.id))
                     .then_some(SoundGroup {
-                        nyaa: Arc::downgrade(&state),
+                        soundscape: Arc::downgrade(&state),
                         id,
                     })
             })
@@ -1862,7 +1872,7 @@ impl SoundGroup {
     }
 
     /// Sets this group's volume multiplier.
-    pub fn set_volume(&self, volume: f32) -> Result<(), NyaaError> {
+    pub fn set_volume(&self, volume: f32) -> Result<(), SoundscapeError> {
         validate_volume(volume)?;
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1875,19 +1885,19 @@ impl SoundGroup {
     }
 
     /// Returns this group's local volume multiplier.
-    pub fn local_volume(&self) -> Result<f32, NyaaError> {
+    pub fn local_volume(&self) -> Result<f32, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().group(self.id)?.volume)
     }
 
     /// Returns this group's volume after all ancestor and master multipliers.
-    pub fn effective_volume(&self) -> Result<f32, NyaaError> {
+    pub fn effective_volume(&self) -> Result<f32, SoundscapeError> {
         let state = self.state()?;
         let state = state.lock().unwrap();
         state.group_effective_volume(self.id)
     }
 
     /// Mutes or unmutes this group without changing its volume.
-    pub fn set_muted(&self, muted: bool) -> Result<(), NyaaError> {
+    pub fn set_muted(&self, muted: bool) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         let group = state.group_mut(self.id)?;
@@ -1899,12 +1909,12 @@ impl SoundGroup {
     }
 
     /// Returns whether this group is locally muted.
-    pub fn is_muted(&self) -> Result<bool, NyaaError> {
+    pub fn is_muted(&self) -> Result<bool, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().group(self.id)?.muted)
     }
 
     /// Replaces this group's post-mix effect chain.
-    pub fn set_effects(&self, effects: SoundEffects) -> Result<(), NyaaError> {
+    pub fn set_effects(&self, effects: SoundEffects) -> Result<(), SoundscapeError> {
         effects.validate()?;
         let state = self.state()?;
         let mut state = state.lock().unwrap();
@@ -1917,12 +1927,12 @@ impl SoundGroup {
     }
 
     /// Returns this group's post-mix effect chain.
-    pub fn effects(&self) -> Result<SoundEffects, NyaaError> {
+    pub fn effects(&self) -> Result<SoundEffects, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().group(self.id)?.effects)
     }
 
     /// Pauses all descendant sounds through a persistent group pause gate.
-    pub fn pause(&self) -> Result<(), NyaaError> {
+    pub fn pause(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.group_mut(self.id)?.paused = true;
@@ -1934,7 +1944,7 @@ impl SoundGroup {
     }
 
     /// Releases this group's pause gate without releasing other group or sound-local pauses.
-    pub fn resume(&self) -> Result<(), NyaaError> {
+    pub fn resume(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.group_mut(self.id)?.paused = false;
@@ -1946,12 +1956,12 @@ impl SoundGroup {
     }
 
     /// Returns whether this group is locally paused.
-    pub fn is_paused(&self) -> Result<bool, NyaaError> {
+    pub fn is_paused(&self) -> Result<bool, SoundscapeError> {
         Ok(self.state()?.lock().unwrap().group(self.id)?.paused)
     }
 
     /// Returns whether this group or one of its ancestors is paused.
-    pub fn is_effectively_paused(&self) -> Result<bool, NyaaError> {
+    pub fn is_effectively_paused(&self) -> Result<bool, SoundscapeError> {
         let state = self.state()?;
         let state = state.lock().unwrap();
         state.group(self.id)?;
@@ -1959,7 +1969,7 @@ impl SoundGroup {
     }
 
     /// Stops all descendant sounds and resets their positions.
-    pub fn stop_all(&self) -> Result<(), NyaaError> {
+    pub fn stop_all(&self) -> Result<(), SoundscapeError> {
         let state = self.state()?;
         let mut state = state.lock().unwrap();
         state.group(self.id)?;
@@ -1977,7 +1987,7 @@ impl SoundGroup {
     }
 
     /// Restarts all descendant sounds from the beginning.
-    pub fn replay_all(&self) -> Result<(), NyaaError> {
+    pub fn replay_all(&self) -> Result<(), SoundscapeError> {
         let sounds = {
             let state = self.state()?;
             let state = state.lock().unwrap();
@@ -1987,7 +1997,7 @@ impl SoundGroup {
         let state = self.state()?;
         for id in sounds {
             Sound {
-                nyaa: Arc::downgrade(&state),
+                soundscape: Arc::downgrade(&state),
                 id,
             }
             .replay()?;
@@ -1996,7 +2006,7 @@ impl SoundGroup {
     }
 
     /// Recursively removes this group and invalidates all descendant handles.
-    pub fn remove(self) -> Result<(), NyaaError> {
+    pub fn remove(self) -> Result<(), SoundscapeError> {
         self.state()?.lock().unwrap().remove_group(self.id)
     }
 }
@@ -2016,7 +2026,7 @@ mod tests {
 
     #[test]
     fn typed_scene_requires_every_key_and_returns_required_sounds_directly() {
-        let missing = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+        let missing = Soundscape::<TestSound>::builder_with_output(Output::new_deferred(None))
             .sound(
                 TestSound::Preview,
                 SoundSource::static_bytes(TEST_AUDIO_BYTES),
@@ -2024,10 +2034,10 @@ mod tests {
             .build();
         assert!(matches!(
             missing,
-            Err(NyaaError::MissingRequiredSound("music/battle/theme"))
+            Err(SoundscapeError::MissingRequiredSound("music/battle/theme"))
         ));
 
-        let nyaa = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+        let soundscape = Soundscape::<TestSound>::builder_with_output(Output::new_deferred(None))
             .sound(
                 TestSound::Preview,
                 SoundSource::static_bytes(TEST_AUDIO_BYTES),
@@ -2039,17 +2049,17 @@ mod tests {
             .build()
             .unwrap();
 
-        let theme = nyaa.sound(TestSound::BattleTheme);
+        let theme = soundscape.sound(TestSound::BattleTheme);
         assert_eq!(theme.path().unwrap(), "music/battle/theme");
         assert_eq!(
-            nyaa.find_sound("music/battle/theme").unwrap().id(),
+            soundscape.find_sound("music/battle/theme").unwrap().id(),
             theme.id()
         );
     }
 
     #[test]
     fn typed_scene_can_create_selected_or_all_placeholders() {
-        let mixed = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+        let mixed = Soundscape::<TestSound>::builder_with_output(Output::new_deferred(None))
             .placeholder(TestSound::Preview)
             .sound(
                 TestSound::BattleTheme,
@@ -2066,7 +2076,7 @@ mod tests {
             SoundSource::StaticBytes(_)
         ));
 
-        let placeholders = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+        let placeholders = Soundscape::<TestSound>::builder_with_output(Output::new_deferred(None))
             .placeholders()
             .unwrap();
         for key in TestSound::ALL {
@@ -2079,7 +2089,7 @@ mod tests {
 
     #[test]
     fn required_sound_identity_survives_moves_and_cannot_be_removed_recursively() {
-        let nyaa = Nyaa::<TestSound>::builder_with_output(Output::new_deferred(None))
+        let soundscape = Soundscape::<TestSound>::builder_with_output(Output::new_deferred(None))
             .sound(
                 TestSound::Preview,
                 SoundSource::static_bytes(TEST_AUDIO_BYTES),
@@ -2090,29 +2100,29 @@ mod tests {
             )
             .build()
             .unwrap();
-        let music = nyaa.group("music").unwrap();
-        let menu = nyaa.create_group("menu").unwrap();
-        let theme = nyaa.sound(TestSound::BattleTheme);
+        let music = soundscape.group("music").unwrap();
+        let menu = soundscape.create_group("menu").unwrap();
+        let theme = soundscape.sound(TestSound::BattleTheme);
 
         assert!(matches!(
             music.clone().remove(),
-            Err(NyaaError::RequiredSound)
+            Err(SoundscapeError::RequiredSound)
         ));
-        assert!(nyaa.group("music/battle").is_some());
+        assert!(soundscape.group("music/battle").is_some());
         assert!(matches!(
             theme.clone().remove(),
-            Err(NyaaError::RequiredSound)
+            Err(SoundscapeError::RequiredSound)
         ));
 
         theme.set_group(&menu).unwrap();
-        assert_eq!(nyaa.sound(TestSound::BattleTheme).id(), theme.id());
+        assert_eq!(soundscape.sound(TestSound::BattleTheme).id(), theme.id());
         assert_eq!(theme.path().unwrap(), "menu/theme");
     }
 
     #[test]
     fn recursive_paths_find_sounds_and_groups() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let music = nyaa.create_group("music").unwrap();
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let music = soundscape.create_group("music").unwrap();
         let combat = music.create_group("combat").unwrap();
         let theme = combat
             .create_sound("theme", SoundSource::static_bytes(TEST_AUDIO_BYTES))
@@ -2121,9 +2131,9 @@ mod tests {
         assert_eq!(music.path().unwrap(), "music");
         assert_eq!(combat.path().unwrap(), "music/combat");
         assert_eq!(theme.path().unwrap(), "music/combat/theme");
-        assert_eq!(nyaa.group("music/combat").unwrap().id(), combat.id());
+        assert_eq!(soundscape.group("music/combat").unwrap().id(), combat.id());
         assert_eq!(
-            nyaa.find_sound("music/combat/theme").unwrap().id(),
+            soundscape.find_sound("music/combat/theme").unwrap().id(),
             theme.id()
         );
         assert_eq!(music.sound("combat/theme").unwrap().id(), theme.id());
@@ -2131,63 +2141,73 @@ mod tests {
 
     #[test]
     fn names_share_one_unambiguous_sibling_namespace() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let music = nyaa.create_group("music").unwrap();
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let music = soundscape.create_group("music").unwrap();
 
         assert!(matches!(
-            nyaa.create_sound("music", SoundSource::static_bytes(TEST_AUDIO_BYTES)),
-            Err(NyaaError::DuplicateName(name)) if name == "music"
+            soundscape.create_sound("music", SoundSource::static_bytes(TEST_AUDIO_BYTES)),
+            Err(SoundscapeError::DuplicateName(name)) if name == "music"
         ));
         assert!(matches!(
             music.create_group("bad/name"),
-            Err(NyaaError::InvalidName)
+            Err(SoundscapeError::InvalidName)
         ));
     }
 
     #[test]
     fn handles_survive_unrelated_insertions_and_never_alias_reused_slots() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let first = nyaa
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let first = soundscape
             .create_sound("first", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
         let first_id = first.id();
-        nyaa.create_sound("second", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+        soundscape
+            .create_sound("second", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
 
         assert_eq!(first.name().unwrap(), "first");
         first.clone().remove().unwrap();
-        assert!(matches!(first.name(), Err(NyaaError::InvalidSoundHandle)));
+        assert!(matches!(
+            first.name(),
+            Err(SoundscapeError::InvalidSoundHandle)
+        ));
 
-        let replacement = nyaa
+        let replacement = soundscape
             .create_sound("replacement", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
         assert_ne!(replacement.id(), first_id);
-        assert!(matches!(first.name(), Err(NyaaError::InvalidSoundHandle)));
+        assert!(matches!(
+            first.name(),
+            Err(SoundscapeError::InvalidSoundHandle)
+        ));
     }
 
     #[test]
     fn reparenting_preserves_handles_and_rejects_cycles() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let music = nyaa.create_group("music").unwrap();
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let music = soundscape.create_group("music").unwrap();
         let combat = music.create_group("combat").unwrap();
-        let menu = nyaa.create_group("menu").unwrap();
+        let menu = soundscape.create_group("menu").unwrap();
         let theme = combat
             .create_sound("theme", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
 
         theme.set_group(&menu).unwrap();
         assert_eq!(theme.path().unwrap(), "menu/theme");
-        assert_eq!(nyaa.find_sound("menu/theme").unwrap().id(), theme.id());
+        assert_eq!(
+            soundscape.find_sound("menu/theme").unwrap().id(),
+            theme.id()
+        );
         assert!(matches!(
             music.set_parent(&combat),
-            Err(NyaaError::SoundGroupCycle)
+            Err(SoundscapeError::SoundGroupCycle)
         ));
     }
 
     #[test]
     fn removing_a_group_invalidates_all_descendant_handles() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let music = nyaa.create_group("music").unwrap();
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let music = soundscape.create_group("music").unwrap();
         let combat = music.create_group("combat").unwrap();
         let theme = combat
             .create_sound("theme", SoundSource::static_bytes(TEST_AUDIO_BYTES))
@@ -2195,28 +2215,31 @@ mod tests {
 
         music.remove().unwrap();
 
-        assert!(nyaa.group("music").is_none());
+        assert!(soundscape.group("music").is_none());
         assert!(matches!(
             combat.name(),
-            Err(NyaaError::InvalidSoundGroupHandle)
+            Err(SoundscapeError::InvalidSoundGroupHandle)
         ));
-        assert!(matches!(theme.name(), Err(NyaaError::InvalidSoundHandle)));
+        assert!(matches!(
+            theme.name(),
+            Err(SoundscapeError::InvalidSoundHandle)
+        ));
     }
 
     #[test]
     fn local_sound_and_group_settings_remain_independent() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let music = nyaa.create_group("music").unwrap();
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let music = soundscape.create_group("music").unwrap();
         let theme = music
             .create_sound("theme", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
 
-        nyaa.set_volume(0.8).unwrap();
+        soundscape.set_volume(0.8).unwrap();
         music.set_volume(0.5).unwrap();
         theme.set_volume(0.7).unwrap();
         theme.set_speed(1.25).unwrap();
 
-        assert_eq!(nyaa.volume(), 0.8);
+        assert_eq!(soundscape.volume(), 0.8);
         assert_eq!(music.local_volume().unwrap(), 0.5);
         assert_eq!(theme.local_volume().unwrap(), 0.7);
         assert!((theme.effective_volume().unwrap() - 0.8 * 0.5 * 0.7).abs() < f32::EPSILON);
@@ -2228,17 +2251,20 @@ mod tests {
         music.set_muted(true).unwrap();
         assert_eq!(theme.effective_volume().unwrap(), 0.0);
         music.set_muted(false).unwrap();
-        assert!(matches!(theme.set_speed(0.0), Err(NyaaError::InvalidSpeed)));
+        assert!(matches!(
+            theme.set_speed(0.0),
+            Err(SoundscapeError::InvalidSpeed)
+        ));
         assert!(matches!(
             music.set_volume(f32::NAN),
-            Err(NyaaError::InvalidVolume)
+            Err(SoundscapeError::InvalidVolume)
         ));
     }
 
     #[test]
     fn invalid_source_replacement_keeps_the_previous_source() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let sound = nyaa
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let sound = soundscape
             .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
         let duration = sound.duration().unwrap();
@@ -2253,8 +2279,8 @@ mod tests {
 
     #[test]
     fn assigning_the_same_source_preserves_the_timeline() {
-        let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-        let sound = nyaa
+        let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+        let sound = soundscape
             .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
         let position = Duration::from_secs(42);
@@ -2269,12 +2295,12 @@ mod tests {
 
     #[test]
     fn seeking_after_completion_sets_the_next_play_position() {
-        let nyaa = Nyaa::new();
-        if !nyaa.has_output() {
+        let soundscape = Soundscape::new();
+        if !soundscape.has_output() {
             eprintln!("Skipping playback assertions: no audio output is available");
             return;
         }
-        let sound = nyaa
+        let sound = soundscape
             .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
         let range = Duration::from_secs(42)..Duration::from_millis(42_250);
@@ -2298,12 +2324,12 @@ mod tests {
 
     #[test]
     fn sound_transport_and_group_pause_gates_preserve_local_intent() {
-        let nyaa = Nyaa::new();
-        if !nyaa.has_output() {
+        let soundscape = Soundscape::new();
+        if !soundscape.has_output() {
             eprintln!("Skipping playback assertions: no audio output is available");
             return;
         }
-        let music = nyaa.create_group("music").unwrap();
+        let music = soundscape.create_group("music").unwrap();
         let theme = music
             .create_sound("theme", SoundSource::static_bytes(TEST_AUDIO_BYTES))
             .unwrap();
@@ -2317,7 +2343,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(nyaa.poll_event().unwrap().sound, theme.id());
+        assert_eq!(soundscape.poll_event().unwrap().sound, theme.id());
 
         music
             .set_effects(SoundEffects {
@@ -2346,11 +2372,15 @@ mod tests {
     #[test]
     fn dropping_the_root_invalidates_every_handle() {
         let sound = {
-            let nyaa = Nyaa::new_with_output(Output::new_deferred(None));
-            nyaa.create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
+            let soundscape = Soundscape::new_with_output(Output::new_deferred(None));
+            soundscape
+                .create_sound("sound", SoundSource::static_bytes(TEST_AUDIO_BYTES))
                 .unwrap()
         };
 
-        assert!(matches!(sound.name(), Err(NyaaError::InvalidSoundHandle)));
+        assert!(matches!(
+            sound.name(),
+            Err(SoundscapeError::InvalidSoundHandle)
+        ));
     }
 }

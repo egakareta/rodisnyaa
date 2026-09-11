@@ -1,6 +1,6 @@
 use std::thread;
 
-use rodisnyaa::{Nyaa, NyaaError, SoundSource};
+use rodisnyaa::{SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
 static MUSIC: &[u8] = include_bytes!("polar 240 yay.mp3");
@@ -16,21 +16,22 @@ rodisnyaa::sound_key! {
     }
 }
 
-fn main() -> Result<(), NyaaError> {
-    let nyaa = Nyaa::<GameSound>::builder()
+fn main() -> Result<(), SoundscapeError> {
+    let soundscape = Soundscape::<GameSound>::builder()
         .sound(GameSound::Music, SoundSource::static_bytes(MUSIC))
         .sound(GameSound::Click, SoundSource::static_bytes(CLICK))
         .placeholder(GameSound::Finish) // Placeholder sound can be assigned later.
         .build()?;
 
     // `build()` validates every key, so this returns `Sound` directly instead of `Option<Sound>`.
-    let music = nyaa.sound(GameSound::Music);
-    let click = nyaa.sound(GameSound::Click);
-    let finish = nyaa.sound(GameSound::Finish);
+    let music = soundscape.sound(GameSound::Music);
+    let click = soundscape.sound(GameSound::Click);
+    let finish = soundscape.sound(GameSound::Finish);
 
     // The same sounds remain reachable by path for dynamic content.
     assert_eq!(
-        nyaa.find_sound("music/theme")
+        soundscape
+            .find_sound("music/theme")
             .expect("typed sound exists")
             .id(),
         music.id()
@@ -39,7 +40,7 @@ fn main() -> Result<(), NyaaError> {
     println!("click path: {}", click.path()?);
 
     // Paths double as mixer buses: one volume scales the whole subtree!
-    if let Some(effects) = nyaa.group("effects") {
+    if let Some(effects) = soundscape.group("effects") {
         effects.set_volume(0.8)?;
     }
     music.set_volume(0.5)?;

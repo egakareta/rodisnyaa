@@ -1,14 +1,14 @@
 use std::thread;
 
-use rodisnyaa::{Nyaa, NyaaError, SoundSource};
+use rodisnyaa::{SoundSource, Soundscape, SoundscapeError};
 use web_time::Duration;
 
 static AUDIO_0: &[u8] = include_bytes!("ATLAS 270 [WHAT NO].wav");
 static AUDIO_1: &[u8] = include_bytes!("polar 240 yay.mp3");
 
-fn main() -> Result<(), NyaaError> {
-    let nyaa = Nyaa::new();
-    let group = nyaa.create_group("mix")?;
+fn main() -> Result<(), SoundscapeError> {
+    let soundscape = Soundscape::new();
+    let group = soundscape.create_group("mix")?;
     group.set_volume(0.8)?;
     let music = group.create_sound("music", SoundSource::static_bytes(AUDIO_0))?;
     let ambience = group.create_sound("ambience", SoundSource::static_bytes(AUDIO_1))?;

@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use rodisnyaa::{Nyaa, Sound, SoundAsset, SoundSource};
+use rodisnyaa::{Sound, SoundAsset, SoundSource, Soundscape};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 #[cfg(target_arch = "wasm32")]
@@ -191,8 +191,8 @@ async fn wait_for_audio_settle() {
 }
 
 async fn measure_playback(source: PlaybackSource) -> MemoryReport {
-    let nyaa = Nyaa::new();
-    let sound = nyaa
+    let soundscape = Soundscape::new();
+    let sound = soundscape
         .create_sound("memory", source.source())
         .expect("the memory-test sound should be created");
     let idle = memory_snapshot();

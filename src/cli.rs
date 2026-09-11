@@ -93,7 +93,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let path = cli
         .path
         .ok_or_else(|| "no audio file provided".to_owned())?;
-    let nyaa = match cli.backend {
+    let soundscape = match cli.backend {
         Some(label) => {
             let backend = rodisnyaa::Output::parse_backend_label(&label).ok_or_else(|| {
                 let available = rodisnyaa::Output::available_backends()
@@ -103,14 +103,14 @@ fn run(cli: Cli) -> Result<(), String> {
                     .join(", ");
                 format!("unknown audio backend \"{label}\". Available backends: {available}")
             })?;
-            rodisnyaa::Nyaa::new_with_output(
+            rodisnyaa::Soundscape::new_with_output(
                 rodisnyaa::Output::try_new_with_backend(backend)
                     .map_err(|error| error.to_string())?,
             )
         }
-        None => rodisnyaa::Nyaa::try_new().map_err(|error| error.to_string())?,
+        None => rodisnyaa::Soundscape::try_new().map_err(|error| error.to_string())?,
     };
-    let sound = nyaa
+    let sound = soundscape
         .create_sound("cli", rodisnyaa::SoundSource::file(path))
         .map_err(|error| error.to_string())?;
     sound

@@ -4,7 +4,7 @@ use std::{num::NonZeroUsize, ops::Range, sync::Arc, time::Duration};
 
 use rodio::Source;
 
-use crate::{NyaaError, SoundAsset, decoder};
+use crate::{SoundAsset, SoundscapeError, decoder};
 
 /// The minimum and maximum sample amplitude in a section of an audio track.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -159,7 +159,7 @@ impl Waveform {
     /// Decodes shared bytes into a waveform.
     ///
     /// Prefer [`Self::builder_from_shared_bytes`] for long tracks to avoid blocking.
-    pub fn from_shared_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, NyaaError> {
+    pub fn from_shared_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, SoundscapeError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
         Ok(Self::from_source(decoder::from_shared_bytes(bytes)?))
     }
@@ -167,7 +167,7 @@ impl Waveform {
     /// Starts decoding shared bytes into a waveform incrementally.
     pub fn builder_from_shared_bytes(
         bytes: impl AsRef<[u8]>,
-    ) -> Result<WaveformBuilder, NyaaError> {
+    ) -> Result<WaveformBuilder, SoundscapeError> {
         let bytes: Arc<[u8]> = Arc::from(bytes.as_ref());
         Ok(Self::builder_from_source(decoder::from_shared_bytes(
             bytes,
@@ -177,13 +177,15 @@ impl Waveform {
     /// Decodes static bytes into a waveform without copying the encoded audio onto the heap.
     ///
     /// Prefer [`Self::builder_from_static_bytes`] for long tracks to avoid blocking.
-    pub fn from_static_bytes(bytes: &'static [u8]) -> Result<Self, NyaaError> {
+    pub fn from_static_bytes(bytes: &'static [u8]) -> Result<Self, SoundscapeError> {
         Ok(Self::from_source(decoder::from_static_bytes(bytes)?))
     }
 
     /// Starts decoding static bytes into a waveform incrementally without copying the encoded
     /// audio onto the heap.
-    pub fn builder_from_static_bytes(bytes: &'static [u8]) -> Result<WaveformBuilder, NyaaError> {
+    pub fn builder_from_static_bytes(
+        bytes: &'static [u8],
+    ) -> Result<WaveformBuilder, SoundscapeError> {
         Ok(Self::builder_from_source(decoder::from_static_bytes(
             bytes,
         )?))
@@ -193,14 +195,14 @@ impl Waveform {
     ///
     /// Prefer [`Self::builder_from_file`] for long tracks to avoid blocking.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, NyaaError> {
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, SoundscapeError> {
         let source = decoder::from_file(path)?;
         Ok(Self::from_source(source))
     }
 
     /// Starts decoding a file into a waveform incrementally.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn builder_from_file(path: impl AsRef<Path>) -> Result<WaveformBuilder, NyaaError> {
+    pub fn builder_from_file(path: impl AsRef<Path>) -> Result<WaveformBuilder, SoundscapeError> {
         let source = decoder::from_file(path)?;
         Ok(Self::builder_from_source(source))
     }
@@ -208,7 +210,7 @@ impl Waveform {
     /// Decodes an audio asset into a waveform using its native path or browser URL.
     ///
     /// Prefer [`Self::builder_from_asset`] for long tracks to avoid blocking.
-    pub async fn from_asset(asset: &SoundAsset) -> Result<Self, NyaaError> {
+    pub async fn from_asset(asset: &SoundAsset) -> Result<Self, SoundscapeError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             Self::from_file(asset.native_path())
@@ -222,7 +224,9 @@ impl Waveform {
     }
 
     /// Starts decoding an audio asset into a waveform incrementally.
-    pub async fn builder_from_asset(asset: &SoundAsset) -> Result<WaveformBuilder, NyaaError> {
+    pub async fn builder_from_asset(
+        asset: &SoundAsset,
+    ) -> Result<WaveformBuilder, SoundscapeError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             Self::builder_from_file(asset.native_path())
@@ -368,7 +372,7 @@ impl WaveformBuilder {
     ///
     /// If the range is already cached, decoding resumes at the earliest missing background range.
     /// Sources with an unknown duration continue loading sequentially.
-    pub fn prioritize(&mut self, range: Range<Duration>) -> Result<(), NyaaError> {
+    pub fn prioritize(&mut self, range: Range<Duration>) -> Result<(), SoundscapeError> {
         if self.finished {
             return Ok(());
         }
@@ -399,7 +403,7 @@ impl WaveformBuilder {
             let start_frame = start_peak.saturating_mul(base_frames_per_peak);
             self.source
                 .try_seek(duration_from_frames(start_frame, self.sample_rate))
-                .map_err(NyaaError::Seek)?;
+                .map_err(SoundscapeError::Seek)?;
             self.current_peak_index = start_peak;
             self.pending_peak = WaveformPeak::UNAVAILABLE;
             self.samples_in_peak = 0;
@@ -522,7 +526,7 @@ impl WaveformBuilder {
     }
 
     /// Decodes the rest of the source and returns an immutable waveform.
-    pub fn finish(mut self) -> Result<Waveform, NyaaError> {
+    pub fn finish(mut self) -> Result<Waveform, SoundscapeError> {
         while !self.finished {
             if let Some(duration) = self.total_duration {
                 self.prioritize(Duration::ZERO..duration)?;
@@ -782,7 +786,7 @@ pub fn decode_audio_to_waveform_streaming<F>(
     window_size: usize,
     chunk_peak_count: usize,
     mut on_chunk: F,
-) -> Result<WaveformDecodeSummary, NyaaError>
+) -> Result<WaveformDecodeSummary, SoundscapeError>
 where
     F: FnMut(usize, Vec<f32>, u32),
 {

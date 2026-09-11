@@ -6,7 +6,7 @@ use crate::Backend;
 ///
 /// Values are obtained from [`crate::Output::available_devices`] or
 /// [`crate::Output::available_devices_for_backend`] and can be passed to
-/// [`crate::Output::try_new_with_device`] or [`crate::Nyaa::switch_device`].
+/// [`crate::Output::try_new_with_device`] or [`crate::Soundscape::switch_device`].
 ///
 /// Devices are identified by their CPAL device id when the platform provides one and fall back
 /// to name matching otherwise. A device obtained from enumeration may no longer exist when it is
