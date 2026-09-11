@@ -129,9 +129,10 @@ impl SoundAsset {
 }
 
 /// An audio source assignment retained by a [`crate::Sound`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum SoundSource {
     /// No audio resource has been assigned yet.
+    #[default]
     Empty,
     /// Encoded bytes with a static lifetime, such as bytes produced by `include_bytes!`.
     StaticBytes(&'static [u8]),
@@ -212,12 +213,6 @@ impl SoundSource {
                 }
             }
         }
-    }
-}
-
-impl Default for SoundSource {
-    fn default() -> Self {
-        Self::Empty
     }
 }
 
