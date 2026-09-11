@@ -1075,12 +1075,12 @@ impl<K> Soundscape<K> {
 impl<K: SoundKey> Soundscape<K> {
     /// Starts building a typed scene using the default output.
     pub fn builder() -> SoundscapeBuilder<K> {
-        SoundscapeBuilder::new()
+        SoundscapeBuilder::default()
     }
 
     /// Starts building a typed scene connected to an existing output.
     pub fn builder_with_output(output: Output) -> SoundscapeBuilder<K> {
-        SoundscapeBuilder::with_output(output)
+        SoundscapeBuilder::new(output)
     }
 
     /// Returns the sound identified by a required key.
@@ -1099,22 +1099,13 @@ impl<K: SoundKey> Soundscape<K> {
 
 impl<K: SoundKey> Default for SoundscapeBuilder<K> {
     fn default() -> Self {
-        Self::new()
+        Self::new(Output::new_deferred(None))
     }
 }
 
 impl<K: SoundKey> SoundscapeBuilder<K> {
-    /// Creates a typed scene builder using the default output.
-    pub fn new() -> Self {
-        Self {
-            output: Output::new(),
-            preferred_backend: None,
-            sounds: Vec::new(),
-        }
-    }
-
     /// Creates a typed scene builder connected to an existing output.
-    pub fn with_output(output: Output) -> Self {
+    pub fn new(output: Output) -> Self {
         let preferred_backend = output.backend();
         Self {
             output,
