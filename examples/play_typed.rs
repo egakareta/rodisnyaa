@@ -17,7 +17,7 @@ euphorium::sound_key! {
 }
 
 fn main() -> Result<(), SoundscapeError> {
-    let soundscape = Soundscape::<GameSound>::builder()
+    let soundscape = Soundscape::<GameSound>::builder_eager()
         .sound(GameSound::Music, SoundSource::static_bytes(MUSIC))
         .sound(GameSound::Click, SoundSource::static_bytes(CLICK))
         .placeholder(GameSound::Finish) // Placeholder sound can be assigned later.
