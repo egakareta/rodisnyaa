@@ -761,7 +761,10 @@ impl SoundNode {
 
         let volume = self.volume();
 
-        let new_player = self.connect_voice();
+        // Prepare the queue before exposing it to the audio callback. On WASM,
+        // contending for the queue mutex from the browser main thread would
+        // attempt a forbidden `Atomics.wait`.
+        let (new_player, output) = Player::new();
 
         new_player.set_volume(volume);
         new_player.set_speed(self.player_speed());
@@ -775,6 +778,8 @@ impl SoundNode {
         if !was_paused {
             new_player.play();
         }
+
+        self.mixer.add(output);
 
         // Dropping the old Player only marks its source as stopped.
         // It does not synchronously wait for WebAudio.
