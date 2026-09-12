@@ -53,6 +53,14 @@ impl App {
         let _ = app
             .music()
             .set_source(SoundSource::asset(SOUND_ASSET.clone()));
+
+        #[cfg(all(target_arch = "wasm32", feature = "nightly"))]
+        if let Err(error) = app
+            .soundscape
+            .switch_backend(euphorium::cpal::HostId::AudioWorklet)
+        {
+            log::error!("could not switch to AudioWorklet backend: {error}");
+        }
         app
     }
 
@@ -332,13 +340,6 @@ impl eframe::App for App {
                             log::error!("could not pause audio: {error}");
                         }
                     } else {
-                        #[cfg(all(target_arch = "wasm32", feature = "nightly"))]
-                        if let Err(error) = self
-                            .soundscape
-                            .switch_backend(euphorium::cpal::HostId::AudioWorklet)
-                        {
-                            log::error!("could not switch to AudioWorklet backend: {error}");
-                        }
                         if let Err(error) = self.music().play() {
                             log::error!("could not play audio: {error}");
                         }

@@ -74,6 +74,37 @@ pub fn switch_outputs_to_backend<'a>(
 }
 
 impl Output {
+    #[cfg(target_arch = "wasm32")]
+    fn browser_has_active_user_gesture() -> bool {
+        let Some(window) = web_sys::window() else {
+            return false;
+        };
+        let Ok(navigator) = js_sys::Reflect::get(
+            window.as_ref(),
+            &wasm_bindgen::JsValue::from_str("navigator"),
+        ) else {
+            return true;
+        };
+        let Ok(user_activation) = js_sys::Reflect::get(
+            &navigator,
+            &wasm_bindgen::JsValue::from_str("userActivation"),
+        ) else {
+            return true;
+        };
+
+        if user_activation.is_null() || user_activation.is_undefined() {
+            return true;
+        }
+
+        js_sys::Reflect::get(
+            &user_activation,
+            &wasm_bindgen::JsValue::from_str("isActive"),
+        )
+        .ok()
+        .and_then(|active| active.as_bool())
+        .unwrap_or(true)
+    }
+
     /// Opens the default audio output when the platform permits it.
     ///
     /// Uses the system default. Browser targets defer opening the output until
@@ -316,9 +347,10 @@ impl Output {
 
     /// Switches this output to a specific audio backend.
     ///
-    /// Does nothing when already on that backend. Otherwise replaces this
-    /// output with a newly opened one; outputs cloned from this output before
-    /// the switch keep using the previous sink.
+    /// Does nothing when already on that backend. Otherwise replaces this output
+    /// with the selected backend; browser targets keep it deferred when called
+    /// outside a user gesture. Outputs cloned before the switch keep using the
+    /// previous sink.
     pub fn switch_backend(&mut self, backend: Backend) -> Result<(), OutputError> {
         if self.backend == Some(backend) {
             return Ok(());
@@ -332,10 +364,10 @@ impl Output {
 
     /// Switches this output to a specific output device.
     ///
-    /// Does nothing when already on that device. Otherwise replaces this
-    /// output with a newly opened one; outputs cloned from this output before
-    /// the switch keep using the previous sink. Switching devices also
-    /// switches the output's backend to the device's backend.
+    /// Does nothing when already on that device. Otherwise replaces this output
+    /// with the selected device; browser targets keep it deferred when called
+    /// outside a user gesture. Outputs cloned before the switch keep using the
+    /// previous sink. Switching devices also switches the output's backend.
     pub fn switch_device(&mut self, device: &Device) -> Result<(), OutputError> {
         if self.device.as_ref() == Some(device) {
             return Ok(());
@@ -475,6 +507,9 @@ impl Output {
     ///
     /// Does nothing when the sink already exists or when the output was created with
     /// [`Output::from_sink`] without a backend or device.
+    ///
+    /// Browser targets return `OutputError::BrowserUserGestureRequired` outside an active user
+    /// gesture and leave the output deferred for a later retry.
     pub fn retry_sink(&self) -> Result<(), OutputError> {
         #[cfg(all(target_arch = "wasm32", feature = "nightly"))]
         crate::patch::ensure_audioworklet_text_polyfill();
@@ -482,6 +517,11 @@ impl Output {
         let mut mixer_device_sink = self.mixer_device_sink.lock().unwrap();
 
         if mixer_device_sink.is_none() {
+            #[cfg(target_arch = "wasm32")]
+            if !Self::browser_has_active_user_gesture() {
+                return Err(OutputError::BrowserUserGestureRequired);
+            }
+
             let sink = match (self.device.clone(), self.backend) {
                 (Some(device), _) => Self::open_device_sink(&device)?,
                 (None, Some(backend)) => Self::open_backend_sink(backend)?,

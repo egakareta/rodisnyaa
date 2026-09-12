@@ -28,9 +28,11 @@ fn on_user_gesture(soundscape: &Soundscape) -> Result<(), SoundscapeError> {
 ```
 
 Call `Sound::play()` synchronously from the click, pointer, or keyboard callback. It records the
-intent immediately; the next `soundscape.update()` on the creating thread then opens deferred
-WebAudio while transient user activation is still available, and starts the browser fetch. Do not
-await `Sound::load()` before first playback unless the output was already opened from a user gesture.
+intent and retries the deferred browser output immediately while transient user activation is
+available; `soundscape.update()` then completes the browser fetch. If playback was requested before
+a gesture, the output stays deferred and a later `play()`, `ensure_output()`, or `update()` during a
+gesture retries it. Do not await `Sound::load()` before first playback unless the output was already
+opened from a user gesture.
 
 On WASM, the complete response is retained in memory for decoding. Ensure the URL is served, CORS
 allows the application origin, the decoder feature matches the file, and large assets fit the

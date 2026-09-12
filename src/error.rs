@@ -102,6 +102,11 @@ pub enum SoundscapeError {
 /// An error that can occur while opening an audio backend or device.
 #[derive(Debug, Error)]
 pub enum OutputError {
+    /// Browser policy requires the output to be opened from a user gesture.
+    #[cfg(target_arch = "wasm32")]
+    #[error("browser audio output must be opened from a user gesture")]
+    BrowserUserGestureRequired,
+
     /// The requested backend is not available on this system.
     #[error("audio backend {backend} is unavailable: {source}")]
     BackendUnavailable {

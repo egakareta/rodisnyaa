@@ -79,10 +79,11 @@ an `SoundAsset`; otherwise `sound.play()` loads it lazily.
 - `try_seek()` and `try_seek_secs()` seek in source time.
 - `wait_until_end()` blocks and is intended for command-line or worker contexts.
 
-`play()` records the intent; the physical output opens when the owning scene is updated
-(`Soundscape::update()` opens it once playback is demanded) or eagerly via
-`Soundscape::ensure_output()`. Without an update loop, call `ensure_output()` before
-`play()`/`wait_until_end()` on a deferred scene.
+`play()` records the intent and opens a deferred browser output when called during a user gesture.
+The physical output can also open when the owning scene is updated (`Soundscape::update()` retries
+it once playback is demanded) or explicitly via `Soundscape::ensure_output()`. Without an update
+loop, call `ensure_output()` before `play()`/`wait_until_end()` on a deferred native scene. In a
+browser, call `play()` or `ensure_output()` synchronously from the gesture callback.
 
 `Sound` and `SoundGroup` handles are `Send + Sync` and may be driven from worker threads;
 keep the `Soundscape` root, `update()`, and output selection on the creating thread.

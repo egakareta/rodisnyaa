@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use euphorium::{PlaybackState, SoundAsset, SoundSource, Soundscape};
+use euphorium::{PlaybackState, SoundAsset, SoundSource, Soundscape, cpal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
@@ -28,6 +28,17 @@ async fn wait_for_browser_task() {
     JsFuture::from(promise)
         .await
         .expect("browser task timer should resolve");
+}
+
+#[wasm_bindgen_test]
+fn selecting_a_backend_before_a_user_gesture_keeps_output_deferred() {
+    let soundscape = Soundscape::new();
+
+    soundscape
+        .switch_backend(cpal::HostId::WebAudio)
+        .expect("selecting a browser backend should succeed");
+
+    assert!(!soundscape.has_output());
 }
 
 #[wasm_bindgen_test]

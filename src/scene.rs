@@ -20,6 +20,13 @@ use crate::{
     SoundscapeError, sound::SoundNode,
 };
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    // Keep the thread-affine AudioContext out of Send + Sync sound handles.
+    static BROWSER_OUTPUTS: std::cell::RefCell<std::collections::HashMap<usize, Weak<Mutex<Output>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 const BUS_CHANNELS: u16 = 2;
 const BUS_SAMPLE_RATE: u32 = 48_000;
 
@@ -366,6 +373,21 @@ impl SoundscapeState {
         Ok(())
     }
 
+    fn retry_output_for_playback(&mut self, output: &Output) {
+        match self.ensure_output(output) {
+            Ok(()) => self.last_output_error = None,
+            #[cfg(target_arch = "wasm32")]
+            Err(OutputError::BrowserUserGestureRequired) => {}
+            Err(error) => {
+                let message = error.to_string();
+                if self.last_output_error.as_deref() != Some(&message) {
+                    log::error!("could not open audio output: {error}");
+                    self.last_output_error = Some(message);
+                }
+            }
+        }
+    }
+
     fn rebuild_audio_graph(&mut self) {
         let group_ids = self
             .groups
@@ -664,6 +686,32 @@ impl SoundscapeState {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn register_browser_output(soundscape: &Arc<Mutex<SoundscapeState>>, output: &Arc<Mutex<Output>>) {
+    BROWSER_OUTPUTS.with(|outputs| {
+        let mut outputs = outputs.borrow_mut();
+        outputs.retain(|_, output| output.strong_count() > 0);
+        outputs.insert(Arc::as_ptr(soundscape) as usize, Arc::downgrade(output));
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_output(soundscape: &Arc<Mutex<SoundscapeState>>) -> Option<Arc<Mutex<Output>>> {
+    BROWSER_OUTPUTS.with(|outputs| {
+        outputs
+            .borrow()
+            .get(&(Arc::as_ptr(soundscape) as usize))
+            .and_then(Weak::upgrade)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn retry_browser_output(state: &mut SoundscapeState, output: &Option<Arc<Mutex<Output>>>) {
+    if let Some(output) = output {
+        state.retry_output_for_playback(&output.lock().unwrap());
+    }
+}
+
 /// The root owner of an application's audio scene.
 ///
 /// A `Soundscape` owns one output, every [`Sound`], and a recursive hierarchy of [`SoundGroup`] mixer
@@ -673,7 +721,7 @@ impl SoundscapeState {
 /// [`Sound`] and [`SoundGroup`] handles are `Send + Sync` and may be driven from worker threads.
 pub struct Soundscape<K = ()> {
     inner: Arc<Mutex<SoundscapeState>>,
-    output: Mutex<Output>,
+    output: Arc<Mutex<Output>>,
     required_sounds: Vec<(K, SoundId)>,
 }
 
@@ -717,11 +765,15 @@ impl Soundscape<()> {
         // built on a live output play without waiting for the first update().
         // Deferred outputs stay pending until update() or ensure_output() opens
         // them (on WASM, in response to a user gesture).
+        let output = Arc::new(Mutex::new(output));
         let mut state = SoundscapeState::new(preferred_backend);
-        state.connect_pending_root(&output);
+        state.connect_pending_root(&output.lock().unwrap());
+        let inner = Arc::new(Mutex::new(state));
+        #[cfg(target_arch = "wasm32")]
+        register_browser_output(&inner, &output);
         Self {
-            inner: Arc::new(Mutex::new(state)),
-            output: Mutex::new(output),
+            inner,
+            output,
             required_sounds: Vec::new(),
         }
     }
@@ -735,9 +787,9 @@ impl<K> Soundscape<K> {
     /// happen in response to a user gesture. When switching backends/devices
     /// while sounds are playing, leaving the new output unopened disconnects
     /// the graph: sounds still report Playing but no audio flows and position
-    /// freezes. Switches originate from user gestures, so the new output is
-    /// opened immediately to preserve playback; on failure the root stays
-    /// pending and is retried on the next update().
+    /// freezes. Browser switches during a user gesture open immediately to
+    /// preserve playback. Earlier switches stay deferred, and `Sound::play`
+    /// or the next activated update retries them.
     ///
     /// Locks the graph before the output; worker threads only ever take the
     /// graph lock, so this order cannot deadlock.
@@ -937,17 +989,7 @@ impl<K> Soundscape<K> {
             .any(|id| state.sound(*id).is_ok_and(|sound| sound.wants_playing));
         if wants_playback {
             let output = self.output.lock().unwrap();
-            match output.retry_sink() {
-                Ok(()) => state.last_output_error = None,
-                Err(error) => {
-                    let message = error.to_string();
-                    if state.last_output_error.as_deref() != Some(&message) {
-                        log::error!("could not open audio output: {error}");
-                        state.last_output_error = Some(message);
-                    }
-                }
-            }
-            state.connect_pending_root(&output);
+            state.retry_output_for_playback(&output);
         }
 
         let mut failures = Vec::new();
@@ -1118,14 +1160,18 @@ impl<K> Soundscape<K> {
         true
     }
 
-    /// Switches the complete scene to a newly opened backend.
+    /// Switches the complete scene to a selected backend.
+    ///
+    /// Browser targets leave the physical output deferred when called outside a user gesture.
     pub fn switch_backend(&self, backend: Backend) -> Result<(), OutputError> {
         let output = Output::try_new_with_backend(backend)?;
         self.replace_output(output, Some(backend));
         Ok(())
     }
 
-    /// Switches the complete scene to a newly opened output device.
+    /// Switches the complete scene to a selected output device.
+    ///
+    /// Browser targets leave the physical output deferred when called outside a user gesture.
     pub fn switch_device(&self, device: &Device) -> Result<(), OutputError> {
         let output = Output::try_new_with_device(device)?;
         self.replace_output(output, Some(device.backend()));
@@ -1447,11 +1493,15 @@ impl Sound {
 
     fn play_from_current(&self, restart: bool) -> Result<(), SoundscapeError> {
         let state = self.state()?;
+        #[cfg(target_arch = "wasm32")]
+        let output = browser_output(&state);
         let mut state = state.lock().unwrap();
         let group_paused = state.group_is_paused(state.sound(self.id)?.group);
         let sound = state.sound_mut(self.id)?;
 
         if sound.wants_playing && sound.is_playing() && !restart {
+            #[cfg(target_arch = "wasm32")]
+            retry_browser_output(&mut state, &output);
             return Ok(());
         }
 
@@ -1487,6 +1537,8 @@ impl Sound {
             sound.pause();
         }
         state.collect_sound_events(self.id);
+        #[cfg(target_arch = "wasm32")]
+        retry_browser_output(&mut state, &output);
         Ok(())
     }
 
