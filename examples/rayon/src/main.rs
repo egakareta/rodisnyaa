@@ -390,13 +390,20 @@ impl eframe::App for App {
 
                 ui.add_space(10.0);
                 ui.separator();
+                ui.label(format!(
+                    "Backend: {}",
+                    self.soundscape
+                        .backend()
+                        .map(|b| b.to_string())
+                        .unwrap_or_else(|| "Unknown".to_string())
+                ));
                 ui.label(format!("Threads: {}", rayon::current_num_threads()));
 
                 if !self.passive_position_result.is_empty() {
                     ui.label(&self.passive_position_result);
                 }
 
-                if ui.button("Run rayon + CPU stress test").clicked() {
+                if ui.button("run stress test").clicked() {
                     self.rayon_result = run_rayon_euphorium_test(sound.clone());
                     log::info!("rayon test: {}", self.rayon_result);
                 }
