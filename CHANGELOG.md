@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0] - 2026-09-12
+
+### Added
+
+- Added browser-aware output initialization that defers opening audio outputs until an active user
+  gesture is available.
+- Added `OutputError::BrowserUserGestureRequired` for browser output attempts outside a user
+  gesture.
+- Added backend information to the Rayon example UI.
+
+### Changed
+
+- `Sound::play()` and `Soundscape::update()` now retry deferred browser outputs when playback is
+  requested.
+- Backend and device selection now preserve deferred browser output state until it can be opened
+  from a user gesture.
+- Prepared WASM audio queues before exposing them to the audio callback to avoid browser-main-thread
+  mutex contention.
+- Updated browser and API documentation and added coverage for backend selection before a user
+  gesture.
+
 ## [0.3.0] - 2026-09-11
 
 ### Added
